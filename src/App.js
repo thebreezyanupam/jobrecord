@@ -22,6 +22,11 @@ import {
 } from './guestStorage';
 import { parseJobsFromJson } from './parseJobJson';
 
+const todayLocal = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 const safeUrl = (url) => {
   if (!url) return null;
   const trimmed = url.trim();
@@ -45,21 +50,61 @@ const CHANCE_COLOR = (n) => {
   return '#E24B4A';
 };
 
-const daysSince = (dateStr) => {
+const parseLocalDate = (dateStr) => {
   if (!dateStr) return null;
-  const diff = Date.now() - new Date(dateStr).getTime();
-  return Math.floor(diff / (1000 * 60 * 60 * 24));
+  const [y, m, d] = dateStr.slice(0, 10).split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+
+const daysSince = (dateStr) => {
+  const d = parseLocalDate(dateStr);
+  if (!d) return null;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  return Math.floor((todayStart - d) / (1000 * 60 * 60 * 24));
 };
 
 const fmt = (dateStr) => {
-  if (!dateStr) return '—';
-  return new Date(dateStr).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' });
+  const d = parseLocalDate(dateStr);
+  if (!d) return '—';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-const EMPTY_FORM = {
-  company: '', role: '', location: '', jobUrl: '', appliedDate: '',
+const emptyForm = () => ({
+  company: '', role: '', location: '', jobUrl: '', appliedDate: todayLocal(),
   status: 'applied', chanceBase: '', chanceCustomized: '',
   platform: '', notes: '', resumeVersion: '', coverLetter: false,
+});
+
+const computeStreak = (jobs) => {
+  const dates = new Set(
+    jobs.filter(j => j.appliedDate).map(j => j.appliedDate.slice(0, 10))
+  );
+  let streak = 0;
+  const d = new Date();
+  while (true) {
+    const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (dates.has(ds)) {
+      streak++;
+      d.setDate(d.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+  return streak;
+};
+
+const getActivityData = (jobs, range) => {
+  const days = range === 'weekly' ? 7 : 30;
+  const result = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const label = i === 0 ? 'Today' : i === 1 ? 'Yest' : `${d.getMonth() + 1}/${d.getDate()}`;
+    result.push({ date: ds, count: jobs.filter(j => j.appliedDate && j.appliedDate.slice(0, 10) === ds).length, label });
+  }
+  return result;
 };
 
 function LoadingScreen({ message }) {
@@ -85,7 +130,17 @@ function JobTracker({ isGuest, user, onLeave }) {
   const [loading, setLoading] = useState(!isGuest);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [form, setForm] = useState(emptyForm);
+  const [dateLockedToToday, setDateLockedToToday] = useState(true);
+  const [chartRange, setChartRange] = useState('weekly');
+  const [chartType, setChartType] = useState('bar');
+  const [expandedDates, setExpandedDates] = useState(new Set());
+
+  const toggleDateCollapse = (key) => setExpandedDates(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
+  });
   const [filter, setFilter] = useState('all');
   const [expandedId, setExpandedId] = useState(null);
   const [formMode, setFormMode] = useState('form');
@@ -97,7 +152,8 @@ function JobTracker({ isGuest, user, onLeave }) {
   const resolveStatus = (status) => (STATUS_CONFIG[status] ? status : 'applied');
 
   const resetFormPanel = () => {
-    setForm(EMPTY_FORM);
+    setForm(emptyForm());
+    setDateLockedToToday(true);
     setEditId(null);
     setFormMode('form');
     setCommandText('');
@@ -204,7 +260,8 @@ function JobTracker({ isGuest, user, onLeave }) {
     } else {
       await addDoc(collection(getDb(), 'jobs'), { ...form, id: Date.now(), userId: user.uid });
     }
-    setForm(EMPTY_FORM);
+    setForm(emptyForm());
+    setDateLockedToToday(true);
     setShowForm(false);
   };
 
@@ -219,6 +276,7 @@ function JobTracker({ isGuest, user, onLeave }) {
   const edit = (job) => {
     const { docId, userId, ...rest } = job;
     setForm(rest);
+    setDateLockedToToday(false);
     setEditId(docId);
     setShowForm(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -250,6 +308,9 @@ function JobTracker({ isGuest, user, onLeave }) {
 
   const filtered = filter === 'all' ? jobs : jobs.filter(j => j.status === filter);
 
+  const today = todayLocal();
+  const yesterday = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
+
   const stats = {
     total: jobs.length,
     applied: jobs.filter(j => j.status === 'applied').length,
@@ -258,16 +319,22 @@ function JobTracker({ isGuest, user, onLeave }) {
     rejected: jobs.filter(j => j.status === 'rejected').length,
     ghosted: jobs.filter(j => j.status === 'ghosted').length,
     responseRate: jobs.length ? Math.round(((jobs.filter(j => ['interview','offer'].includes(j.status)).length) / jobs.length) * 100) : 0,
+    todayCount: jobs.filter(j => j.appliedDate && j.appliedDate.slice(0, 10) === today).length,
+    yesterdayCount: jobs.filter(j => j.appliedDate && j.appliedDate.slice(0, 10) === yesterday).length,
+    streak: computeStreak(jobs),
   };
 
   const s = {
-    app: { minHeight: '100vh', background: '#0a0a0a', color: '#e8e6e0', fontFamily: "'DM Sans', sans-serif", padding: '0 0 80px' },
-    header: { borderBottom: '1px solid #1e1e1e', padding: '24px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, background: '#0a0a0a', zIndex: 10 },
+    app: { height: '100vh', overflow: 'hidden', background: '#0a0a0a', color: '#e8e6e0', fontFamily: "'DM Sans', sans-serif", display: 'flex', flexDirection: 'column' },
+    header: { borderBottom: '1px solid #1e1e1e', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, background: '#0a0a0a', zIndex: 10 },
     headerLeft: { display: 'flex', alignItems: 'baseline', gap: 16, flexWrap: 'wrap' },
     title: { fontFamily: "'DM Mono', monospace", fontSize: 18, fontWeight: 500, color: '#e8e6e0', margin: 0 },
     subtitle: { fontFamily: "'DM Mono', monospace", fontSize: 12, color: '#444', margin: 0 },
     addBtn: { background: '#378ADD', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 18px', fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif", display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' },
-    main: { maxWidth: 960, margin: '0 auto', padding: '32px 24px', width: '100%' },
+    main: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 960, margin: '0 auto', padding: '0 24px' },
+    mainOuter: { flex: 1, overflow: 'hidden', display: 'flex', justifyContent: 'center' },
+    staticArea: { flexShrink: 0, paddingTop: 14 },
+    jobScroll: { flex: 1, overflowY: 'auto', paddingBottom: 40 },
     jobCard: { background: '#111', border: '1px solid #1e1e1e', borderRadius: 10, marginBottom: 10 },
     jobTop: { padding: '16px 20px', cursor: 'pointer' },
     jobMain: { flex: 1, minWidth: 0 },
@@ -333,7 +400,14 @@ function JobTracker({ isGuest, user, onLeave }) {
 
   return (
     <div style={s.app}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 99px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+        * { scrollbar-width: thin; scrollbar-color: #2a2a2a transparent; }
+      `}</style>
       <header style={s.header} className="app-header">
         <div style={s.headerLeft} className="header-left">
           <p style={s.title}>Job Tracker</p>
@@ -367,8 +441,10 @@ function JobTracker({ isGuest, user, onLeave }) {
         </div>
       </header>
 
+      <div style={s.mainOuter}>
       <main style={s.main} className="app-main">
 
+        <div style={s.staticArea}>
         {importNotice && (
           <p className="import-notice">{importNotice}</p>
         )}
@@ -424,7 +500,28 @@ function JobTracker({ isGuest, user, onLeave }) {
               <Field label="Location" id="location" />
               <Field label="Platform (Indeed / LinkedIn / etc)" id="platform" />
               <Field label="Job URL" id="jobUrl" full />
-              <Field label="Applied Date" id="appliedDate" type="date" />
+              {!editId ? (
+                <div style={s.formGroup}>
+                  <label style={s.formLabel}>Applied Date</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', marginBottom: 4 }}>
+                    <input
+                      type="checkbox"
+                      checked={dateLockedToToday}
+                      onChange={e => {
+                        setDateLockedToToday(e.target.checked);
+                        if (e.target.checked) setForm(f => ({ ...f, appliedDate: todayLocal() }));
+                      }}
+                      style={{ width: 14, height: 14, accentColor: '#378ADD' }}
+                    />
+                    <span style={{ fontSize: 12, color: '#666' }}>Applied today</span>
+                  </label>
+                  {!dateLockedToToday && (
+                    <input type="date" style={s.formInput} value={form.appliedDate} onChange={e => setForm({ ...form, appliedDate: e.target.value })} />
+                  )}
+                </div>
+              ) : (
+                <Field label="Applied Date" id="appliedDate" type="date" />
+              )}
               <Field label="Status" id="status" as="select" />
               <Field label="Resume Version" id="resumeVersion" />
               <Field label="Chance — base %" id="chanceBase" />
@@ -444,6 +541,8 @@ function JobTracker({ isGuest, user, onLeave }) {
           </div>
         )}
 
+        </div>{/* end staticArea */}
+
         {loading ? (
           <div style={s.loadingWrap}>
             <div style={s.spinner} />
@@ -451,66 +550,149 @@ function JobTracker({ isGuest, user, onLeave }) {
           </div>
         ) : (
           <>
-        {/* ── Summary panel ── */}
+        <div style={s.staticArea}>
+        {/* ── Activity & Streak ── */}
         {(() => {
-          const statusItems = [
-            { key: 'applied',   label: 'Applied',   color: '#378ADD', value: stats.applied },
-            { key: 'interview', label: 'Interview', color: '#EF9F27', value: stats.interview },
-            { key: 'offer',     label: 'Offer',     color: '#1D9E75', value: stats.offer },
-            { key: 'rejected',  label: 'Rejected',  color: '#E24B4A', value: stats.rejected },
-            { key: 'ghosted',   label: 'Ghosted',   color: '#888780', value: stats.ghosted },
-            { key: 'saved',     label: 'Saved',     color: '#7F77DD', value: jobs.filter(j => j.status === 'saved').length },
-          ];
-          const segments = statusItems.filter(i => i.value > 0);
+          const activityData = getActivityData(jobs, chartRange);
+          const maxCount = Math.max(...activityData.map(d => d.count), 1);
           const rateColor = stats.responseRate > 20 ? '#1D9E75' : stats.responseRate > 10 ? '#EF9F27' : '#E24B4A';
           return (
             <div style={{ background: '#111', border: '1px solid #1e1e1e', borderRadius: 10, padding: '16px 18px', marginBottom: 16 }}>
-              {/* hero row */}
-              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 4 }}>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 22, fontWeight: 600, color: '#e8e6e0' }}>
-                  {stats.total}
-                  <span style={{ fontSize: 13, fontWeight: 400, color: '#444', marginLeft: 8 }}>applications</span>
-                </span>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: rateColor }}>
-                  {stats.responseRate}%
-                  <span style={{ fontSize: 11, color: '#444', marginLeft: 5 }}>response rate</span>
-                </span>
+              {/* top row */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {/* total */}
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: '#e8e6e0' }}>{stats.total}</span>
+                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>total</span>
+                  </div>
+                  {/* response rate */}
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: rateColor }}>{stats.responseRate}%</span>
+                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>response</span>
+                  </div>
+                  {/* streak */}
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: stats.streak > 0 ? '#EF9F27' : '#333' }}>
+                      {stats.streak > 0 ? `🔥 ${stats.streak}` : '—'}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>streak</span>
+                  </div>
+                  {/* today */}
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: stats.todayCount > 0 ? '#378ADD' : '#2a2a2a' }}>{stats.todayCount}</span>
+                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>today</span>
+                  </div>
+                  {/* yesterday */}
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: stats.yesterdayCount > 0 ? '#7F77DD' : '#2a2a2a' }}>{stats.yesterdayCount}</span>
+                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>yesterday</span>
+                  </div>
+                </div>
+                {/* controls: type + range as matching pill groups */}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', background: '#0d0d0d', border: '1px solid #1e1e1e', borderRadius: 7, padding: 2, gap: 2 }}>
+                    {[['bar', 'Bar'], ['curve', 'Curve']].map(([t, label]) => (
+                      <button key={t} type="button" onClick={() => setChartType(t)} style={{
+                        background: chartType === t ? '#1e1e1e' : 'transparent',
+                        color: chartType === t ? '#e8e6e0' : '#444',
+                        border: 'none', borderRadius: 5, padding: '3px 10px',
+                        fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif",
+                        transition: 'background 0.15s, color 0.15s',
+                      }}>{label}</button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', background: '#0d0d0d', border: '1px solid #1e1e1e', borderRadius: 7, padding: 2, gap: 2 }}>
+                    {[['weekly', '7 days'], ['monthly', '30 days']].map(([r, label]) => (
+                      <button key={r} type="button" onClick={() => setChartRange(r)} style={{
+                        background: chartRange === r ? '#1e1e1e' : 'transparent',
+                        color: chartRange === r ? '#e8e6e0' : '#444',
+                        border: 'none', borderRadius: 5, padding: '3px 10px',
+                        fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif",
+                        transition: 'background 0.15s, color 0.15s',
+                      }}>{label}</button>
+                    ))}
+                  </div>
+                </div>
               </div>
-
-              {/* stacked bar */}
-              <div style={{ height: 5, borderRadius: 99, background: '#1a1a1a', overflow: 'hidden', display: 'flex', marginBottom: 14 }}>
-                {stats.total === 0
-                  ? <div style={{ flex: 1, background: '#1a1a1a' }} />
-                  : segments.map(seg => (
-                    <div key={seg.key}
-                      style={{ width: `${(seg.value / stats.total) * 100}%`, background: seg.color, transition: 'width 0.4s ease' }}
-                    />
-                  ))
-                }
-              </div>
-
-              {/* per-status panels */}
-              <div className="status-panels">
-                {statusItems.map(item => {
-                  const active = filter === item.key;
-                  return (
-                    <div key={item.key}
-                      className="status-panel-btn"
-                      style={{
-                        borderColor: '#1e1e1e',
-                        background: '#0d0d0d',
-                      }}
-                    >
-                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: item.value === 0 ? '#2a2a2a' : item.color, lineHeight: 1, display: 'block', marginBottom: 3 }}>
-                        {item.value}
-                      </span>
-                      <span style={{ fontSize: 10, color: item.value === 0 ? '#2a2a2a' : '#555', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>
-                        {item.label}
-                      </span>
+              {/* chart */}
+              {chartType === 'bar' ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: chartRange === 'monthly' ? 2 : 4, height: 52 }}>
+                    {activityData.map((d) => {
+                      const isToday = d.label === 'Today';
+                      const barH = d.count === 0 ? 3 : Math.max(6, Math.round((d.count / maxCount) * 52));
+                      return (
+                        <div key={d.date} title={`${d.date}: ${d.count}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, cursor: 'default' }}>
+                          <div style={{ width: '100%', height: barH, background: isToday ? '#378ADD' : d.count > 0 ? '#378ADD44' : '#161616', borderRadius: 3, transition: 'height 0.3s ease' }} />
+                          {chartRange === 'weekly' && (
+                            <span style={{ fontSize: 9, color: isToday ? '#378ADD' : '#2e2e2e', fontFamily: "'DM Mono', monospace", whiteSpace: 'nowrap' }}>{d.label}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {chartRange === 'monthly' && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+                      <span style={{ fontSize: 9, color: '#2e2e2e', fontFamily: "'DM Mono', monospace" }}>{activityData[0]?.date?.slice(5)}</span>
+                      <span style={{ fontSize: 9, color: '#378ADD', fontFamily: "'DM Mono', monospace" }}>Today</span>
                     </div>
-                  );
-                })}
-              </div>
+                  )}
+                </>
+              ) : (() => {
+                const W = 500, H = 60, padX = 6, padY = 6;
+                const pts = activityData.map((d, i) => {
+                  const x = padX + (i / Math.max(activityData.length - 1, 1)) * (W - padX * 2);
+                  const y = H - padY - (maxCount === 0 ? 0 : (d.count / maxCount) * (H - padY * 2));
+                  return [x, y];
+                });
+                const pathD = pts.reduce((acc, [x, y], i) => {
+                  if (i === 0) return `M ${x},${y}`;
+                  const [px, py] = pts[i - 1];
+                  const cpx = (px + x) / 2;
+                  return `${acc} C ${cpx},${py} ${cpx},${y} ${x},${y}`;
+                }, '');
+                const fillD = pts.length > 0
+                  ? `${pathD} L ${pts[pts.length - 1][0]},${H} L ${pts[0][0]},${H} Z`
+                  : '';
+                const todayIdx = activityData.length - 1;
+                return (
+                  <div>
+                    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 64, display: 'block' }} preserveAspectRatio="none">
+                      <defs>
+                        <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#378ADD" stopOpacity="0.18" />
+                          <stop offset="100%" stopColor="#378ADD" stopOpacity="0" />
+                        </linearGradient>
+                      </defs>
+                      {fillD && <path d={fillD} fill="url(#cg)" />}
+                      {pathD && <path d={pathD} fill="none" stroke="#378ADD" strokeWidth="1.5" strokeLinecap="round" />}
+                      {pts.map(([x, y], i) => {
+                        const isToday = i === todayIdx;
+                        const hasPt = activityData[i].count > 0 || isToday;
+                        return hasPt ? (
+                          <circle key={i} cx={x} cy={y}
+                            r={isToday ? 3 : 2}
+                            fill={isToday ? '#378ADD' : '#378ADD88'}
+                            stroke="#0a0a0a" strokeWidth={isToday ? 1.5 : 0}
+                          />
+                        ) : null;
+                      })}
+                    </svg>
+                    <div style={{ display: 'flex', justifyContent: chartRange === 'weekly' ? 'space-around' : 'space-between', marginTop: 3 }}>
+                      {chartRange === 'weekly'
+                        ? activityData.map(d => (
+                          <span key={d.date} style={{ fontSize: 9, color: d.label === 'Today' ? '#378ADD' : '#2e2e2e', fontFamily: "'DM Mono', monospace" }}>{d.label}</span>
+                        ))
+                        : <>
+                          <span style={{ fontSize: 9, color: '#2e2e2e', fontFamily: "'DM Mono', monospace" }}>{activityData[0]?.date?.slice(5)}</span>
+                          <span style={{ fontSize: 9, color: '#378ADD', fontFamily: "'DM Mono', monospace" }}>Today</span>
+                        </>
+                      }
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           );
         })()}
@@ -520,6 +702,7 @@ function JobTracker({ isGuest, user, onLeave }) {
           {['all', ...Object.keys(STATUS_CONFIG)].map(f => {
             const active = filter === f;
             const color = f !== 'all' ? STATUS_CONFIG[f].color : null;
+            const count = f === 'all' ? jobs.length : jobs.filter(j => j.status === f).length;
             return (
               <button key={f} type="button"
                 style={{
@@ -534,17 +717,47 @@ function JobTracker({ isGuest, user, onLeave }) {
               >
                 {color && <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />}
                 {f === 'all' ? 'All' : STATUS_CONFIG[f].label}
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, opacity: count === 0 ? 0.3 : 0.7 }}>{count}</span>
               </button>
             );
           })}
         </div>
 
+        </div>{/* end staticArea */}
+        <div style={s.jobScroll}>
         {filtered.length === 0 ? (
           <div style={s.empty}>
             <p style={s.emptyTitle}>No applications yet</p>
             <p style={s.emptyText}>Add one to get started</p>
           </div>
-        ) : filtered.map(job => {
+        ) : (() => {
+          const grouped = filtered.reduce((acc, job) => {
+            const key = job.appliedDate ? job.appliedDate.slice(0, 10) : 'no-date';
+            if (!acc[key]) acc[key] = [];
+            acc[key].push(job);
+            return acc;
+          }, {});
+          const sortedKeys = Object.keys(grouped).sort((a, b) => {
+            if (a === 'no-date') return 1;
+            if (b === 'no-date') return -1;
+            return b.localeCompare(a);
+          });
+          const todayStr = todayLocal();
+          const yesterdayStr = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+          return sortedKeys.map(dateKey => {
+            const label = dateKey === 'no-date' ? 'No date' : dateKey === todayStr ? 'Today' : dateKey === yesterdayStr ? 'Yesterday' : fmt(dateKey);
+            const isCollapsed = !expandedDates.has(dateKey);
+            const cnt = grouped[dateKey].length;
+            const accentColor = dateKey === todayStr ? '#378ADD' : dateKey === yesterdayStr ? '#7F77DD' : '#444';
+            return (
+              <div key={dateKey}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '14px 0 8px', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDateCollapse(dateKey)}>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, fontWeight: 600, color: accentColor, letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{label}</span>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: accentColor, background: accentColor + '18', border: `1px solid ${accentColor}33`, borderRadius: 99, padding: '1px 7px' }}>{cnt} app{cnt !== 1 ? 's' : ''}</span>
+                  <div style={{ flex: 1, height: 1, background: '#1e1e1e' }} />
+                  <span style={{ fontSize: 10, color: '#333', fontFamily: "'DM Mono', monospace" }}>{isCollapsed ? '▶ show' : '▼ hide'}</span>
+                </div>
+                {!isCollapsed && grouped[dateKey].map(job => {
           const days = daysSince(job.appliedDate);
           const isExpanded = expandedId === job.id;
           return (
@@ -668,9 +881,15 @@ function JobTracker({ isGuest, user, onLeave }) {
             </div>
           );
         })}
+              </div>
+            );
+          });
+        })()}
+        </div>{/* end jobScroll */}
           </>
         )}
       </main>
+      </div>{/* end mainOuter */}
 
     </div>
   );
