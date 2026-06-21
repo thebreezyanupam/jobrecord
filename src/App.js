@@ -21,6 +21,7 @@ import {
   normalizeGuestJobs,
 } from './guestStorage';
 import { parseJobsFromJson } from './parseJobJson';
+import ThemePicker, { loadTheme, applyTheme } from './ThemePicker';
 
 const todayLocal = () => {
   const d = new Date();
@@ -54,14 +55,6 @@ const parseLocalDate = (dateStr) => {
   if (!dateStr) return null;
   const [y, m, d] = dateStr.slice(0, 10).split('-').map(Number);
   return new Date(y, m - 1, d);
-};
-
-const daysSince = (dateStr) => {
-  const d = parseLocalDate(dateStr);
-  if (!d) return null;
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  return Math.floor((todayStart - d) / (1000 * 60 * 60 * 24));
 };
 
 const fmt = (dateStr) => {
@@ -107,25 +100,60 @@ const getActivityData = (jobs, range) => {
   return result;
 };
 
+// GitHub-style heatmap: trailing `weeks` columns of 7 days (Sun→Sat), ending this week.
+// Build a single month as calendar weeks (rows of 7, Sun→Sat). Cells outside the month are null.
+const getMonthMatrix = (jobs, year, month) => {
+  const counts = {};
+  jobs.forEach((j) => {
+    if (j.appliedDate) {
+      const k = j.appliedDate.slice(0, 10);
+      counts[k] = (counts[k] || 0) + 1;
+    }
+  });
+  const pad = (n) => String(n).padStart(2, '0');
+  const startWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = `${year}-${pad(month + 1)}-${pad(d)}`;
+    cells.push({ date: ds, day: d, count: counts[ds] || 0 });
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+};
+
+const HEAT_COLOR = (c) => {
+  if (c <= 0) return 'var(--surface-2)';
+  if (c === 1) return 'color-mix(in srgb, var(--accent) 25%, transparent)';
+  if (c === 2) return 'color-mix(in srgb, var(--accent) 44%, transparent)';
+  if (c === 3) return 'color-mix(in srgb, var(--accent) 66%, transparent)';
+  return 'var(--accent)';
+};
+
+const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
 function LoadingScreen({ message }) {
   return (
     <div style={{
-      minHeight: '100vh', background: '#0a0a0a', display: 'flex',
+      minHeight: '100vh', background: 'var(--bg)', display: 'flex',
       flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16,
     }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <div style={{
-        width: 32, height: 32, border: '2px solid #1e1e1e', borderTopColor: '#378ADD',
+        width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--accent)',
         borderRadius: '50%', animation: 'spin 0.8s linear infinite',
       }} />
-      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: '#444', margin: 0 }}>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: 'var(--t6)', margin: 0 }}>
         {message}
       </p>
     </div>
   );
 }
 
-function JobTracker({ isGuest, user, onLeave }) {
+function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
   const [jobs, setJobs] = useState(() => (isGuest ? normalizeGuestJobs(loadGuestJobs()) : []));
   const [loading, setLoading] = useState(!isGuest);
   const [showForm, setShowForm] = useState(false);
@@ -133,16 +161,18 @@ function JobTracker({ isGuest, user, onLeave }) {
   const [form, setForm] = useState(emptyForm);
   const [dateLockedToToday, setDateLockedToToday] = useState(true);
   const [chartRange, setChartRange] = useState('weekly');
-  const [chartType, setChartType] = useState('bar');
-  const [expandedDates, setExpandedDates] = useState(new Set());
+  const [chartType, setChartType] = useState('calendar');
+  const [calDate, setCalDate] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
+  const [viewMode, setViewMode] = useState('list');
+  // Date groups are expanded by default; this set tracks the ones the user collapsed.
+  const [collapsedDates, setCollapsedDates] = useState(new Set());
 
-  const toggleDateCollapse = (key) => setExpandedDates(prev => {
+  const toggleDateCollapse = (key) => setCollapsedDates(prev => {
     const next = new Set(prev);
     next.has(key) ? next.delete(key) : next.add(key);
     return next;
   });
   const [filter, setFilter] = useState('all');
-  const [expandedId, setExpandedId] = useState(null);
   const [formMode, setFormMode] = useState('form');
   const [commandText, setCommandText] = useState('');
   const [commandError, setCommandError] = useState('');
@@ -182,7 +212,7 @@ function JobTracker({ isGuest, user, onLeave }) {
       setLoading(false);
     });
     return unsubscribe;
-  }, [isGuest, user.uid]);
+  }, [isGuest, user?.uid]);
 
   useEffect(() => {
     if (!isGuest) return;
@@ -276,25 +306,49 @@ function JobTracker({ isGuest, user, onLeave }) {
   const edit = (job) => {
     const { docId, userId, ...rest } = job;
     setForm(rest);
+    setFormMode('form');
     setDateLockedToToday(false);
     setEditId(docId);
     setShowForm(true);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const updateStatus = async (docId, newStatus) => {
-    if (isGuest) {
-      setJobs(jobs.map((j) => (j.docId === docId ? { ...j, status: newStatus } : j)));
-      if (filter !== 'all' && filter !== newStatus) setFilter('all');
-      return;
-    }
-    initFirebase();
-    try {
-      await updateDoc(doc(getDb(), 'jobs', docId), { status: newStatus });
-      if (filter !== 'all' && filter !== newStatus) setFilter('all');
-    } catch (err) {
-      setImportNotice(err?.message || 'Could not update status.');
-    }
+
+  const exportCsv = () => {
+    if (!jobs.length) return;
+    const headers = [
+      'Company', 'Role', 'Location', 'Status', 'Applied Date', 'Platform',
+      'Job URL', 'Base Chance %', 'Customized Chance %', 'Resume Version',
+      'Cover Letter', 'Notes',
+    ];
+    const esc = (v) => {
+      const str = v == null ? '' : String(v);
+      return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+    const rows = [...jobs].sort((a, b) => b.id - a.id).map((j) => [
+      j.company,
+      j.role,
+      j.location,
+      STATUS_CONFIG[resolveStatus(j.status)].label,
+      j.appliedDate ? j.appliedDate.slice(0, 10) : '',
+      j.platform,
+      j.jobUrl,
+      j.chanceBase,
+      j.chanceCustomized,
+      j.resumeVersion,
+      j.coverLetter ? 'Yes' : 'No',
+      j.notes,
+    ].map(esc).join(','));
+    const csv = '﻿' + [headers.join(','), ...rows].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `job-applications-${todayLocal()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setImportNotice(jobs.length === 1 ? 'Exported 1 application.' : `Exported ${jobs.length} applications.`);
   };
 
   const handleLeave = () => {
@@ -325,53 +379,53 @@ function JobTracker({ isGuest, user, onLeave }) {
   };
 
   const s = {
-    app: { height: '100vh', overflow: 'hidden', background: '#0a0a0a', color: '#e8e6e0', fontFamily: "'DM Sans', sans-serif", display: 'flex', flexDirection: 'column' },
-    header: { borderBottom: '1px solid #1e1e1e', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, background: '#0a0a0a', zIndex: 10 },
+    app: { height: '100vh', overflow: 'hidden', background: 'var(--app-bg)', color: 'var(--t1)', fontFamily: "'DM Sans', sans-serif", display: 'flex', flexDirection: 'column' },
+    header: { borderBottom: '1px solid var(--border)', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, background: 'transparent', zIndex: 10 },
     headerLeft: { display: 'flex', alignItems: 'baseline', gap: 16, flexWrap: 'wrap' },
-    title: { fontFamily: "'DM Mono', monospace", fontSize: 18, fontWeight: 500, color: '#e8e6e0', margin: 0 },
-    subtitle: { fontFamily: "'DM Mono', monospace", fontSize: 12, color: '#444', margin: 0 },
-    addBtn: { background: '#378ADD', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 18px', fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif", display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' },
-    main: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 960, margin: '0 auto', padding: '0 24px' },
+    title: { fontFamily: "'DM Mono', monospace", fontSize: 19, fontWeight: 500, color: 'var(--t1)', margin: 0, letterSpacing: '-0.02em' },
+    subtitle: { fontFamily: "'DM Mono', monospace", fontSize: 11, color: 'var(--t5)', margin: 0, textTransform: 'uppercase', letterSpacing: '0.14em' },
+    addBtn: { background: 'var(--accent)', color: 'var(--accent-contrast)', border: 'none', borderRadius: 6, padding: '8px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif", display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' },
+    main: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 1320, margin: '0 auto', padding: '0 24px' },
     mainOuter: { flex: 1, overflow: 'hidden', display: 'flex', justifyContent: 'center' },
     staticArea: { flexShrink: 0, paddingTop: 14 },
     jobScroll: { flex: 1, overflowY: 'auto', paddingBottom: 40 },
-    jobCard: { background: '#111', border: '1px solid #1e1e1e', borderRadius: 10, marginBottom: 10 },
+    jobCard: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10, boxShadow: 'var(--shadow-card)' },
     jobTop: { padding: '16px 20px', cursor: 'pointer' },
     jobMain: { flex: 1, minWidth: 0 },
-    jobTitle: { fontSize: 15, fontWeight: 500, color: '#e8e6e0', margin: '0 0 3px', overflow: 'hidden', textOverflow: 'ellipsis' },
-    jobCompany: { fontSize: 13, color: '#888', margin: '0 0 10px', wordBreak: 'break-word' },
+    jobTitle: { fontSize: 16, fontWeight: 600, color: 'var(--t1)', margin: '0 0 4px', overflow: 'hidden', textOverflow: 'ellipsis', letterSpacing: '-0.01em' },
+    jobCompany: { fontSize: 13, color: 'var(--t3)', margin: '0 0 11px', wordBreak: 'break-word' },
     jobBadges: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' },
     statusBadge: (status) => ({ background: STATUS_CONFIG[status].bg, color: STATUS_CONFIG[status].color, border: `1px solid ${STATUS_CONFIG[status].color}33`, borderRadius: 99, padding: '3px 10px', fontSize: 11, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 4 }),
     dot: (status) => ({ width: 6, height: 6, borderRadius: '50%', background: STATUS_CONFIG[status].dot, display: 'inline-block' }),
-    badge: { background: '#1a1a1a', color: '#666', border: '1px solid #222', borderRadius: 99, padding: '2px 8px', fontSize: 11 },
-    chanceBadge: (n) => ({ background: '#0f0f0f', color: CHANCE_COLOR(n), border: `1px solid ${CHANCE_COLOR(n)}44`, borderRadius: 99, padding: '2px 8px', fontSize: 11, fontFamily: "'DM Mono', monospace" }),
-    daysTag: (d) => ({ fontSize: 11, color: d > 14 ? '#E24B4A' : d > 7 ? '#EF9F27' : '#555', fontFamily: "'DM Mono', monospace" }),
-    expanded: { borderTop: '1px solid #1a1a1a', padding: '16px 20px', background: '#0d0d0d' },
+    badge: { background: 'var(--surface-3)', color: 'var(--t4)', border: '1px solid var(--border-2)', borderRadius: 99, padding: '2px 8px', fontSize: 11 },
+    chanceBadge: (n) => ({ background: 'var(--bg-inset)', color: CHANCE_COLOR(n), border: `1px solid ${CHANCE_COLOR(n)}44`, borderRadius: 99, padding: '2px 8px', fontSize: 11, fontFamily: "'DM Mono', monospace" }),
+    daysTag: (d) => ({ fontSize: 11, color: d > 14 ? '#E24B4A' : d > 7 ? '#EF9F27' : 'var(--t5)', fontFamily: "'DM Mono', monospace" }),
+    expanded: { borderTop: '1px solid var(--surface-3)', padding: '16px 20px', background: 'var(--bg-inset)' },
     expandRow: { display: 'flex', flexDirection: 'column', gap: 2 },
-    expandLabel: { fontSize: 10, color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em' },
-    expandVal: { fontSize: 13, color: '#aaa', wordBreak: 'break-word' },
-    notes: { background: '#111', border: '1px solid #1e1e1e', borderRadius: 6, padding: '10px 12px', fontSize: 13, color: '#888', fontFamily: "'DM Mono', monospace", lineHeight: 1.6, marginBottom: 16, wordBreak: 'break-word' },
+    expandLabel: { fontSize: 10, color: 'var(--t6)', textTransform: 'uppercase', letterSpacing: '0.06em' },
+    expandVal: { fontSize: 13, color: 'var(--t2)', wordBreak: 'break-word' },
+    notes: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', fontSize: 13, color: 'var(--t3)', fontFamily: "'DM Mono', monospace", lineHeight: 1.6, marginBottom: 16, wordBreak: 'break-word' },
     actionRow: { display: 'flex', gap: 8, flexWrap: 'wrap' },
-    actionBtn: (color) => ({ background: 'transparent', color: color || '#555', border: `1px solid ${color ? color + '33' : '#222'}`, borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif" }),
-    statusSelect: { background: '#1a1a1a', color: '#aaa', border: '1px solid #222', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif", maxWidth: '100%' },
-    formOverlay: { background: '#0a0a0a', border: '1px solid #1e1e1e', borderRadius: 12, padding: 28, marginBottom: 28 },
-    formTitle: { fontFamily: "'DM Mono', monospace", fontSize: 14, color: '#e8e6e0', margin: '0 0 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+    actionBtn: (color) => ({ background: 'transparent', color: color || 'var(--t5)', border: `1px solid ${color ? color + '33' : 'var(--border-2)'}`, borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif" }),
+    statusSelect: { background: 'var(--surface-3)', color: 'var(--t2)', border: '1px solid var(--border-2)', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif", maxWidth: '100%' },
+    formOverlay: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, marginBottom: 28, boxShadow: 'var(--shadow-pop)' },
+    formTitle: { fontFamily: "'DM Mono', monospace", fontSize: 14, color: 'var(--t1)', margin: '0 0 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
     formGroup: { display: 'flex', flexDirection: 'column', gap: 5 },
-    formLabel: { fontSize: 11, color: '#555', textTransform: 'uppercase', letterSpacing: '0.06em' },
-    formInput: { background: '#111', border: '1px solid #222', borderRadius: 6, padding: '8px 12px', fontSize: 13, color: '#e8e6e0', fontFamily: "'DM Sans', sans-serif", outline: 'none', width: '100%', boxSizing: 'border-box' },
-    formTextarea: { background: '#111', border: '1px solid #222', borderRadius: 6, padding: '8px 12px', fontSize: 13, color: '#e8e6e0', fontFamily: "'DM Mono', monospace", outline: 'none', width: '100%', boxSizing: 'border-box', resize: 'vertical', minHeight: 80 },
-    cancelBtn: { background: 'transparent', color: '#555', border: '1px solid #222', borderRadius: 6, padding: '8px 18px', fontSize: 13, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif" },
-    saveBtn: { background: '#378ADD', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 20px', fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif" },
-    empty: { textAlign: 'center', padding: '60px 20px', color: '#333' },
-    emptyTitle: { fontFamily: "'DM Mono', monospace", fontSize: 16, color: '#444', margin: '0 0 8px' },
-    emptyText: { fontSize: 13, color: '#333', margin: 0 },
+    formLabel: { fontSize: 11, color: 'var(--t5)', textTransform: 'uppercase', letterSpacing: '0.06em' },
+    formInput: { background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: 6, padding: '8px 12px', fontSize: 13, color: 'var(--t1)', fontFamily: "'DM Sans', sans-serif", outline: 'none', width: '100%', boxSizing: 'border-box' },
+    formTextarea: { background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: 6, padding: '8px 12px', fontSize: 13, color: 'var(--t1)', fontFamily: "'DM Mono', monospace", outline: 'none', width: '100%', boxSizing: 'border-box', resize: 'vertical', minHeight: 80 },
+    cancelBtn: { background: 'transparent', color: 'var(--t5)', border: '1px solid var(--border-2)', borderRadius: 6, padding: '8px 18px', fontSize: 13, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif" },
+    saveBtn: { background: 'var(--accent)', color: 'var(--accent-contrast)', border: 'none', borderRadius: 6, padding: '8px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif", boxShadow: 'var(--accent-glow)' },
+    empty: { textAlign: 'center', padding: '60px 20px', color: 'var(--t7)' },
+    emptyTitle: { fontFamily: "'DM Mono', monospace", fontSize: 16, color: 'var(--t6)', margin: '0 0 8px' },
+    emptyText: { fontSize: 13, color: 'var(--t7)', margin: 0 },
     loadingWrap: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 20px', gap: 16 },
-    spinner: { width: 32, height: 32, border: '2px solid #1e1e1e', borderTopColor: '#378ADD', borderRadius: '50%', animation: 'spin 0.8s linear infinite' },
-    loadingText: { fontFamily: "'DM Mono', monospace", fontSize: 12, color: '#444', margin: 0 },
+    spinner: { width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' },
+    loadingText: { fontFamily: "'DM Mono', monospace", fontSize: 12, color: 'var(--t6)', margin: 0 },
     formTab: (active) => ({
-      background: active ? '#1e1e1e' : 'transparent',
-      color: active ? '#e8e6e0' : '#555',
-      border: `1px solid ${active ? '#333' : '#1e1e1e'}`,
+      background: active ? 'var(--border)' : 'transparent',
+      color: active ? 'var(--t1)' : 'var(--t5)',
+      border: `1px solid ${active ? 'var(--t7)' : 'var(--border)'}`,
       borderRadius: 6,
       padding: '6px 12px',
       fontSize: 11,
@@ -398,15 +452,57 @@ function JobTracker({ isGuest, user, onLeave }) {
     </div>
   );
 
+  const renderJobCard = (job, inGrid) => {
+    const chanceRaw = job.chanceCustomized || job.chanceBase;
+    const chanceVal = chanceRaw ? parseInt(chanceRaw) : null;
+    return (
+      <div
+        key={job.id}
+        className={`job-card-themed${inGrid ? ' job-card-grid' : ''}`}
+        style={{ ...s.jobCard, position: 'relative', overflow: 'hidden', marginBottom: inGrid ? 0 : 10, cursor: 'pointer' }}
+        onClick={() => edit(job)}
+        title="Click to view / edit"
+      >
+        {chanceVal !== null && !Number.isNaN(chanceVal) && (
+          <span aria-hidden="true" style={{
+            position: 'absolute', top: '50%', right: inGrid ? 14 : 28, transform: 'translateY(-50%)',
+            fontFamily: "'DM Sans', sans-serif", fontWeight: 800, fontSize: inGrid ? 96 : 132,
+            letterSpacing: '-0.07em', lineHeight: 1, color: CHANCE_COLOR(chanceVal),
+            opacity: 0.18, pointerEvents: 'none', userSelect: 'none', zIndex: 0, whiteSpace: 'nowrap',
+          }}>
+            {chanceVal}<span style={{ fontSize: '0.46em', fontWeight: 600, letterSpacing: '-0.02em' }}>%</span>
+          </span>
+        )}
+        <div style={{ ...s.jobTop, position: 'relative', zIndex: 1 }} className="job-top-responsive">
+          <div style={s.jobMain}>
+            <p style={s.jobTitle}>{job.role}</p>
+            <p style={s.jobCompany}>{job.company}{job.location ? ` · ${job.location}` : ''}</p>
+            <div style={s.jobBadges}>
+              <span style={s.statusBadge(resolveStatus(job.status))}>
+                <span style={s.dot(resolveStatus(job.status))} />
+                {STATUS_CONFIG[resolveStatus(job.status)].label}
+              </span>
+              {job.appliedDate && (
+                <span style={{ ...s.badge, fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--t4)' }}>
+                  {fmt(job.appliedDate)}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={s.app}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 99px; }
-        ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
-        * { scrollbar-width: thin; scrollbar-color: #2a2a2a transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border-3); border-radius: 99px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--t7); }
+        * { scrollbar-width: thin; scrollbar-color: var(--border-3) transparent; }
       `}</style>
       <header style={s.header} className="app-header">
         <div style={s.headerLeft} className="header-left">
@@ -419,6 +515,7 @@ function JobTracker({ isGuest, user, onLeave }) {
           ) : (
             <span className="user-email" title={user.email}>{user.email}</span>
           )}
+          <ThemePicker theme={theme} setTheme={setTheme} />
           <button type="button" className="logout-btn" onClick={handleLeave}>
             {isGuest ? 'Exit' : 'Log out'}
           </button>
@@ -450,9 +547,11 @@ function JobTracker({ isGuest, user, onLeave }) {
         )}
 
         {showForm && (
-          <div style={s.formOverlay} className="form-overlay-responsive">
+          <div className="modal-overlay" onClick={() => { setShowForm(false); resetFormPanel(); }}>
+          <div style={s.formOverlay} className="form-overlay-responsive form-modal" onClick={(e) => e.stopPropagation()}>
             <p style={s.formTitle}>
               <span>{editId ? 'Edit application' : 'New application'}</span>
+              <button type="button" className="modal-close" aria-label="Close" onClick={() => { setShowForm(false); resetFormPanel(); }}>×</button>
             </p>
 
             {!editId && (
@@ -468,7 +567,7 @@ function JobTracker({ isGuest, user, onLeave }) {
 
             {formMode === 'command' && !editId ? (
               <>
-                <p style={{ ...s.formLabel, marginBottom: 8, textTransform: 'none', letterSpacing: 0, fontSize: 12, color: '#666' }}>
+                <p style={{ ...s.formLabel, marginBottom: 8, textTransform: 'none', letterSpacing: 0, fontSize: 12, color: 'var(--t4)' }}>
                   Paste one job object or a JSON array, then import.
                 </p>
                 <textarea
@@ -511,9 +610,9 @@ function JobTracker({ isGuest, user, onLeave }) {
                         setDateLockedToToday(e.target.checked);
                         if (e.target.checked) setForm(f => ({ ...f, appliedDate: todayLocal() }));
                       }}
-                      style={{ width: 14, height: 14, accentColor: '#378ADD' }}
+                      style={{ width: 14, height: 14, accentColor: 'var(--accent)' }}
                     />
-                    <span style={{ fontSize: 12, color: '#666' }}>Applied today</span>
+                    <span style={{ fontSize: 12, color: 'var(--t4)' }}>Applied today</span>
                   </label>
                   {!dateLockedToToday && (
                     <input type="date" style={s.formInput} value={form.appliedDate} onChange={e => setForm({ ...form, appliedDate: e.target.value })} />
@@ -533,11 +632,15 @@ function JobTracker({ isGuest, user, onLeave }) {
               <Field label="Notes" id="notes" as="textarea" full />
             </div>
             <div className="form-actions-responsive">
+              {editId && (
+                <button type="button" className="form-delete-btn" style={s.actionBtn('#E24B4A')} onClick={() => { del(editId); setShowForm(false); resetFormPanel(); }}>Delete</button>
+              )}
               <button type="button" style={s.cancelBtn} onClick={() => { setShowForm(false); resetFormPanel(); }}>Cancel</button>
               <button type="button" style={s.saveBtn} onClick={save}>Save</button>
             </div>
               </>
             )}
+          </div>
           </div>
         )}
 
@@ -550,95 +653,146 @@ function JobTracker({ isGuest, user, onLeave }) {
           </div>
         ) : (
           <>
-        <div style={s.staticArea}>
+        <div className="dashboard-layout">
+        <aside className="dashboard-side">
         {/* ── Activity & Streak ── */}
         {(() => {
           const activityData = getActivityData(jobs, chartRange);
           const maxCount = Math.max(...activityData.map(d => d.count), 1);
           const rateColor = stats.responseRate > 20 ? '#1D9E75' : stats.responseRate > 10 ? '#EF9F27' : '#E24B4A';
           return (
-            <div style={{ background: '#111', border: '1px solid #1e1e1e', borderRadius: 10, padding: '16px 18px', marginBottom: 16 }}>
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 18px', marginBottom: 16, boxShadow: 'var(--shadow-card)' }}>
               {/* top row */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
                 <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
                   {/* total */}
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: '#e8e6e0' }}>{stats.total}</span>
-                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>total</span>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 27, fontWeight: 500, letterSpacing: '-0.03em', color: 'var(--t1)' }}>{stats.total}</span>
+                    <span style={{ fontSize: 10, color: 'var(--t5)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>total</span>
                   </div>
                   {/* response rate */}
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: rateColor }}>{stats.responseRate}%</span>
-                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>response</span>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 27, fontWeight: 500, letterSpacing: '-0.03em', color: rateColor }}>{stats.responseRate}%</span>
+                    <span style={{ fontSize: 10, color: 'var(--t5)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>response</span>
                   </div>
                   {/* streak */}
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: stats.streak > 0 ? '#EF9F27' : '#333' }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 27, fontWeight: 500, letterSpacing: '-0.03em', color: stats.streak > 0 ? '#EF9F27' : 'var(--t7)' }}>
                       {stats.streak > 0 ? `🔥 ${stats.streak}` : '—'}
                     </span>
-                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>streak</span>
+                    <span style={{ fontSize: 10, color: 'var(--t5)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>streak</span>
                   </div>
                   {/* today */}
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: stats.todayCount > 0 ? '#378ADD' : '#2a2a2a' }}>{stats.todayCount}</span>
-                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>today</span>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 27, fontWeight: 500, letterSpacing: '-0.03em', color: stats.todayCount > 0 ? 'var(--accent)' : 'var(--border-3)' }}>{stats.todayCount}</span>
+                    <span style={{ fontSize: 10, color: 'var(--t5)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>today</span>
                   </div>
                   {/* yesterday */}
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 600, color: stats.yesterdayCount > 0 ? '#7F77DD' : '#2a2a2a' }}>{stats.yesterdayCount}</span>
-                    <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>yesterday</span>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 27, fontWeight: 500, letterSpacing: '-0.03em', color: stats.yesterdayCount > 0 ? '#7F77DD' : 'var(--border-3)' }}>{stats.yesterdayCount}</span>
+                    <span style={{ fontSize: 10, color: 'var(--t5)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>yesterday</span>
                   </div>
                 </div>
                 {/* controls: type + range as matching pill groups */}
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <div style={{ display: 'flex', background: '#0d0d0d', border: '1px solid #1e1e1e', borderRadius: 7, padding: 2, gap: 2 }}>
-                    {[['bar', 'Bar'], ['curve', 'Curve']].map(([t, label]) => (
+                  <div style={{ display: 'flex', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 7, padding: 2, gap: 2 }}>
+                    {[['calendar', 'Calendar'], ['bar', 'Bar'], ['curve', 'Curve']].map(([t, label]) => (
                       <button key={t} type="button" onClick={() => setChartType(t)} style={{
-                        background: chartType === t ? '#1e1e1e' : 'transparent',
-                        color: chartType === t ? '#e8e6e0' : '#444',
+                        background: chartType === t ? 'var(--border)' : 'transparent',
+                        color: chartType === t ? 'var(--t1)' : 'var(--t6)',
                         border: 'none', borderRadius: 5, padding: '3px 10px',
                         fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif",
                         transition: 'background 0.15s, color 0.15s',
                       }}>{label}</button>
                     ))}
                   </div>
-                  <div style={{ display: 'flex', background: '#0d0d0d', border: '1px solid #1e1e1e', borderRadius: 7, padding: 2, gap: 2 }}>
+                  {chartType !== 'calendar' && (
+                  <div style={{ display: 'flex', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 7, padding: 2, gap: 2 }}>
                     {[['weekly', '7 days'], ['monthly', '30 days']].map(([r, label]) => (
                       <button key={r} type="button" onClick={() => setChartRange(r)} style={{
-                        background: chartRange === r ? '#1e1e1e' : 'transparent',
-                        color: chartRange === r ? '#e8e6e0' : '#444',
+                        background: chartRange === r ? 'var(--border)' : 'transparent',
+                        color: chartRange === r ? 'var(--t1)' : 'var(--t6)',
                         border: 'none', borderRadius: 5, padding: '3px 10px',
                         fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif",
                         transition: 'background 0.15s, color 0.15s',
                       }}>{label}</button>
                     ))}
                   </div>
+                  )}
                 </div>
               </div>
               {/* chart */}
-              {chartType === 'bar' ? (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: chartRange === 'monthly' ? 2 : 4, height: 52 }}>
+              {chartType === 'calendar' ? (() => {
+                const weeks = getMonthMatrix(jobs, calDate.y, calDate.m);
+                const monthTotal = weeks.reduce((sum, wk) => sum + wk.reduce((s, d) => s + (d ? d.count : 0), 0), 0);
+                const goPrev = () => setCalDate(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }));
+                const goNext = () => setCalDate(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }));
+                const now = new Date();
+                const isCurrentMonth = calDate.y === now.getFullYear() && calDate.m === now.getMonth();
+                return (
+                  <div className="cal-month">
+                    <div className="cal-month-head">
+                      <button type="button" className="cal-nav-btn" onClick={goPrev} aria-label="Previous month">‹</button>
+                      <span className="cal-month-title">{MONTH_FULL[calDate.m]} {calDate.y}</span>
+                      <button type="button" className="cal-nav-btn" onClick={goNext} disabled={isCurrentMonth} aria-label="Next month">›</button>
+                    </div>
+                    <div className="cal-weekdays">
+                      {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => <span key={i}>{d}</span>)}
+                    </div>
+                    <div className="cal-grid">
+                      {weeks.flat().map((day, i) => {
+                        if (!day) return <div key={`e${i}`} className="cal-day cal-day-empty" />;
+                        const isToday = day.date === today;
+                        const has = day.count > 0;
+                        return (
+                          <div
+                            key={day.date}
+                            className={`cal-day${isToday ? ' cal-day-today' : ''}`}
+                            title={`${day.date}: ${day.count} application${day.count !== 1 ? 's' : ''}`}
+                            style={{ background: HEAT_COLOR(day.count) }}
+                          >
+                            <span className="cal-day-num" style={{ color: has ? 'var(--t1)' : 'var(--t5)', fontWeight: has ? 600 : 400 }}>{day.day}</span>
+                            {day.count > 1 && <span className="cal-day-count">{day.count}</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="cal-month-foot">
+                      <span style={{ fontSize: 10, color: 'var(--t6)', fontFamily: "'DM Mono', monospace" }}>
+                        {monthTotal} application{monthTotal !== 1 ? 's' : ''} this month
+                      </span>
+                      {!isCurrentMonth && (
+                        <button type="button" className="cal-today-btn" onClick={() => setCalDate({ y: now.getFullYear(), m: now.getMonth() })}>Today</button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })() : chartType === 'bar' ? (
+                <div className="chart-plot">
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: chartRange === 'monthly' ? 3 : 6, height: 84 }}>
                     {activityData.map((d) => {
                       const isToday = d.label === 'Today';
-                      const barH = d.count === 0 ? 3 : Math.max(6, Math.round((d.count / maxCount) * 52));
+                      const barH = d.count === 0 ? 4 : Math.max(8, Math.round((d.count / maxCount) * 84));
                       return (
-                        <div key={d.date} title={`${d.date}: ${d.count}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, cursor: 'default' }}>
-                          <div style={{ width: '100%', height: barH, background: isToday ? '#378ADD' : d.count > 0 ? '#378ADD44' : '#161616', borderRadius: 3, transition: 'height 0.3s ease' }} />
-                          {chartRange === 'weekly' && (
-                            <span style={{ fontSize: 9, color: isToday ? '#378ADD' : '#2e2e2e', fontFamily: "'DM Mono', monospace", whiteSpace: 'nowrap' }}>{d.label}</span>
-                          )}
+                        <div key={d.date} title={`${d.date}: ${d.count}`} style={{ flex: 1, display: 'flex', alignItems: 'flex-end', height: '100%', cursor: 'default' }}>
+                          <div style={{ width: '100%', height: barH, background: isToday ? 'var(--accent)' : d.count > 0 ? 'color-mix(in srgb, var(--accent) 32%, transparent)' : 'var(--surface-2)', borderRadius: 4, transition: 'height 0.3s ease' }} />
                         </div>
                       );
                     })}
                   </div>
-                  {chartRange === 'monthly' && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-                      <span style={{ fontSize: 9, color: '#2e2e2e', fontFamily: "'DM Mono', monospace" }}>{activityData[0]?.date?.slice(5)}</span>
-                      <span style={{ fontSize: 9, color: '#378ADD', fontFamily: "'DM Mono', monospace" }}>Today</span>
+                  {chartRange === 'weekly' ? (
+                    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                      {activityData.map((d) => (
+                        <span key={d.date} style={{ flex: 1, textAlign: 'center', fontSize: 9, color: d.label === 'Today' ? 'var(--accent)' : 'var(--t8)', fontFamily: "'DM Mono', monospace", whiteSpace: 'nowrap' }}>{d.label}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+                      <span style={{ fontSize: 9, color: 'var(--t8)', fontFamily: "'DM Mono', monospace" }}>{activityData[0]?.date?.slice(5)}</span>
+                      <span style={{ fontSize: 9, color: 'var(--accent)', fontFamily: "'DM Mono', monospace" }}>Today</span>
                     </div>
                   )}
-                </>
+                </div>
               ) : (() => {
                 const W = 500, H = 60, padX = 6, padY = 6;
                 const pts = activityData.map((d, i) => {
@@ -657,24 +811,24 @@ function JobTracker({ isGuest, user, onLeave }) {
                   : '';
                 const todayIdx = activityData.length - 1;
                 return (
-                  <div>
-                    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 64, display: 'block' }} preserveAspectRatio="none">
+                  <div className="chart-plot">
+                    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 80, display: 'block' }} preserveAspectRatio="none">
                       <defs>
                         <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#378ADD" stopOpacity="0.18" />
-                          <stop offset="100%" stopColor="#378ADD" stopOpacity="0" />
+                          <stop offset="0%" style={{ stopColor: 'var(--accent)', stopOpacity: 0.18 }} />
+                          <stop offset="100%" style={{ stopColor: 'var(--accent)', stopOpacity: 0 }} />
                         </linearGradient>
                       </defs>
                       {fillD && <path d={fillD} fill="url(#cg)" />}
-                      {pathD && <path d={pathD} fill="none" stroke="#378ADD" strokeWidth="1.5" strokeLinecap="round" />}
+                      {pathD && <path d={pathD} fill="none" style={{ stroke: 'var(--accent)' }} strokeWidth="1.5" strokeLinecap="round" />}
                       {pts.map(([x, y], i) => {
                         const isToday = i === todayIdx;
                         const hasPt = activityData[i].count > 0 || isToday;
                         return hasPt ? (
                           <circle key={i} cx={x} cy={y}
                             r={isToday ? 3 : 2}
-                            fill={isToday ? '#378ADD' : '#378ADD88'}
-                            stroke="#0a0a0a" strokeWidth={isToday ? 1.5 : 0}
+                            style={{ fill: isToday ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 53%, transparent)', stroke: 'var(--bg)' }}
+                            strokeWidth={isToday ? 1.5 : 0}
                           />
                         ) : null;
                       })}
@@ -682,11 +836,11 @@ function JobTracker({ isGuest, user, onLeave }) {
                     <div style={{ display: 'flex', justifyContent: chartRange === 'weekly' ? 'space-around' : 'space-between', marginTop: 3 }}>
                       {chartRange === 'weekly'
                         ? activityData.map(d => (
-                          <span key={d.date} style={{ fontSize: 9, color: d.label === 'Today' ? '#378ADD' : '#2e2e2e', fontFamily: "'DM Mono', monospace" }}>{d.label}</span>
+                          <span key={d.date} style={{ fontSize: 9, color: d.label === 'Today' ? 'var(--accent)' : 'var(--t8)', fontFamily: "'DM Mono', monospace" }}>{d.label}</span>
                         ))
                         : <>
-                          <span style={{ fontSize: 9, color: '#2e2e2e', fontFamily: "'DM Mono', monospace" }}>{activityData[0]?.date?.slice(5)}</span>
-                          <span style={{ fontSize: 9, color: '#378ADD', fontFamily: "'DM Mono', monospace" }}>Today</span>
+                          <span style={{ fontSize: 9, color: 'var(--t8)', fontFamily: "'DM Mono', monospace" }}>{activityData[0]?.date?.slice(5)}</span>
+                          <span style={{ fontSize: 9, color: 'var(--accent)', fontFamily: "'DM Mono', monospace" }}>Today</span>
                         </>
                       }
                     </div>
@@ -697,34 +851,70 @@ function JobTracker({ isGuest, user, onLeave }) {
           );
         })()}
 
-        {/* ── Filter chips ── */}
-        <div className="filters-scroll" style={{ marginBottom: 16 }}>
+        {/* ── Filter tiles ── */}
+        <div className="filters-tiles">
           {['all', ...Object.keys(STATUS_CONFIG)].map(f => {
             const active = filter === f;
-            const color = f !== 'all' ? STATUS_CONFIG[f].color : null;
+            const color = f === 'all' ? 'var(--accent)' : STATUS_CONFIG[f].color;
             const count = f === 'all' ? jobs.length : jobs.filter(j => j.status === f).length;
+            const label = f === 'all' ? 'All' : STATUS_CONFIG[f].label;
             return (
-              <button key={f} type="button"
-                style={{
-                  background: active ? (color ? color + '20' : '#1e1e1e') : 'transparent',
-                  color: active ? (color || '#e8e6e0') : '#444',
-                  border: `1px solid ${active ? (color ? color + '55' : '#333') : '#1a1a1a'}`,
-                  borderRadius: 99, padding: '4px 13px', fontSize: 12,
-                  cursor: 'pointer', fontFamily: "'DM Sans', sans-serif",
-                  display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
-                }}
+              <button
+                key={f}
+                type="button"
                 onClick={() => setFilter(f)}
+                className={`filter-tile${active ? ' active' : ''}${f === 'all' ? ' filter-tile-all' : ''}`}
+                style={{ '--tile-color': color }}
               >
-                {color && <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />}
-                {f === 'all' ? 'All' : STATUS_CONFIG[f].label}
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, opacity: count === 0 ? 0.3 : 0.7 }}>{count}</span>
+                <span className="filter-tile-top">
+                  <span className="filter-tile-dot" style={{ background: color }} />
+                  <span className="filter-tile-count">{count}</span>
+                </span>
+                <span className="filter-tile-label">{label}</span>
               </button>
             );
           })}
         </div>
 
-        </div>{/* end staticArea */}
-        <div style={s.jobScroll}>
+        </aside>{/* end dashboard-side */}
+
+        <section className="dashboard-jobs">
+        {/* ── Toolbar: count · view toggle · export ── */}
+        <div className="jobs-toolbar">
+          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: 'var(--t5)' }}>
+            {filtered.length} {filtered.length === 1 ? 'application' : 'applications'}
+          </span>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 7, padding: 2, gap: 2 }}>
+              {[['list', 'List'], ['grid', 'Grid']].map(([v, label]) => (
+                <button key={v} type="button" onClick={() => setViewMode(v)} style={{
+                  background: viewMode === v ? 'var(--border)' : 'transparent',
+                  color: viewMode === v ? 'var(--t1)' : 'var(--t6)',
+                  border: 'none', borderRadius: 5, padding: '4px 12px',
+                  fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif",
+                  transition: 'background 0.15s, color 0.15s',
+                }}>{label}</button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={exportCsv}
+              disabled={!jobs.length}
+              title="Export all applications as a CSV spreadsheet"
+              style={{
+                background: 'transparent', color: jobs.length ? '#1D9E75' : 'var(--t7)',
+                border: `1px solid ${jobs.length ? '#1D9E7544' : 'var(--surface-3)'}`,
+                borderRadius: 7, padding: '5px 12px', fontSize: 11,
+                cursor: jobs.length ? 'pointer' : 'not-allowed', fontFamily: "'DM Sans', sans-serif",
+                display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
+              }}
+            >
+              ↓ Export CSV
+            </button>
+          </div>
+        </div>
+
+        <div style={s.jobScroll} className="jobs-scroll-area">
         {filtered.length === 0 ? (
           <div style={s.empty}>
             <p style={s.emptyTitle}>No applications yet</p>
@@ -746,146 +936,29 @@ function JobTracker({ isGuest, user, onLeave }) {
           const yesterdayStr = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
           return sortedKeys.map(dateKey => {
             const label = dateKey === 'no-date' ? 'No date' : dateKey === todayStr ? 'Today' : dateKey === yesterdayStr ? 'Yesterday' : fmt(dateKey);
-            const isCollapsed = !expandedDates.has(dateKey);
+            const isCollapsed = collapsedDates.has(dateKey);
             const cnt = grouped[dateKey].length;
-            const accentColor = dateKey === todayStr ? '#378ADD' : dateKey === yesterdayStr ? '#7F77DD' : '#444';
+            const accentColor = dateKey === todayStr ? 'var(--accent)' : dateKey === yesterdayStr ? '#7F77DD' : 'var(--t6)';
             return (
               <div key={dateKey}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '14px 0 8px', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDateCollapse(dateKey)}>
                   <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, fontWeight: 600, color: accentColor, letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{label}</span>
-                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: accentColor, background: accentColor + '18', border: `1px solid ${accentColor}33`, borderRadius: 99, padding: '1px 7px' }}>{cnt} app{cnt !== 1 ? 's' : ''}</span>
-                  <div style={{ flex: 1, height: 1, background: '#1e1e1e' }} />
-                  <span style={{ fontSize: 10, color: '#333', fontFamily: "'DM Mono', monospace" }}>{isCollapsed ? '▶ show' : '▼ hide'}</span>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: accentColor, background: `color-mix(in srgb, ${accentColor} 14%, transparent)`, border: `1px solid color-mix(in srgb, ${accentColor} 30%, transparent)`, borderRadius: 99, padding: '1px 7px' }}>{cnt} app{cnt !== 1 ? 's' : ''}</span>
+                  <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                  <span style={{ fontSize: 10, color: 'var(--t7)', fontFamily: "'DM Mono', monospace" }}>{isCollapsed ? '▶ show' : '▼ hide'}</span>
                 </div>
-                {!isCollapsed && grouped[dateKey].map(job => {
-          const days = daysSince(job.appliedDate);
-          const isExpanded = expandedId === job.id;
-          return (
-            <div key={job.id} style={s.jobCard}>
-              <div style={s.jobTop} className="job-top-responsive" onClick={() => setExpandedId(isExpanded ? null : job.id)}>
-                <div style={s.jobMain}>
-                  <p style={s.jobTitle}>{job.role}</p>
-                  <p style={s.jobCompany}>{job.company}{job.location ? ` · ${job.location}` : ''}</p>
-                  <div style={s.jobBadges}>
-                    <span style={s.statusBadge(resolveStatus(job.status))}>
-                      <span style={s.dot(resolveStatus(job.status))} />
-                      {STATUS_CONFIG[resolveStatus(job.status)].label}
-                    </span>
-                    {job.appliedDate && (
-                      <span style={{ ...s.badge, fontFamily: "'DM Mono', monospace", fontSize: 10, color: '#666' }}>
-                        {fmt(job.appliedDate)}
-                      </span>
-                    )}
-                    {job.platform && <span style={s.badge}>{job.platform}</span>}
-                    {job.coverLetter && <span style={{ ...s.badge, color: '#7F77DD', borderColor: '#7F77DD33' }}>cover letter</span>}
-                    {job.resumeVersion && <span style={{ ...s.badge, fontFamily: "'DM Mono', monospace", fontSize: 10 }}>{job.resumeVersion}</span>}
-                  </div>
-                </div>
-                <div className="job-right-responsive">
-                  {job.chanceCustomized && (
-                    <span style={s.chanceBadge(parseInt(job.chanceCustomized))}>
-                      {job.chanceCustomized}% custom
-                    </span>
-                  )}
-                  {job.chanceBase && !job.chanceCustomized && (
-                    <span style={s.chanceBadge(parseInt(job.chanceBase))}>
-                      {job.chanceBase}% base
-                    </span>
-                  )}
-                  {days !== null && (
-                    <span style={s.daysTag(days)}>
-                      {days === 0 ? 'today' : `${days}d ago`}
-                    </span>
-                  )}
-                  <span style={{ fontSize: 12, color: '#333' }}>{isExpanded ? '▲' : '▼'}</span>
-                </div>
-              </div>
-
-              {isExpanded && (
-                <div style={s.expanded}>
-                  <div className="expand-grid-responsive">
-                    <div style={s.expandRow}>
-                      <span style={s.expandLabel}>Applied</span>
-                      <span style={s.expandVal}>{fmt(job.appliedDate)}</span>
-                    </div>
-                    <div style={s.expandRow}>
-                      <span style={s.expandLabel}>Days since applied</span>
-                      <span style={{ ...s.expandVal, color: days > 14 ? '#E24B4A' : '#aaa', fontFamily: "'DM Mono', monospace" }}>
-                        {days !== null ? `${days} days` : '—'}
-                      </span>
-                    </div>
-                    <div style={s.expandRow}>
-                      <span style={s.expandLabel}>Base chance</span>
-                      <span style={{ ...s.expandVal, color: job.chanceBase ? CHANCE_COLOR(parseInt(job.chanceBase)) : '#444', fontFamily: "'DM Mono', monospace" }}>
-                        {job.chanceBase ? `${job.chanceBase}%` : '—'}
-                      </span>
-                    </div>
-                    <div style={s.expandRow}>
-                      <span style={s.expandLabel}>Customized chance</span>
-                      <span style={{ ...s.expandVal, color: job.chanceCustomized ? CHANCE_COLOR(parseInt(job.chanceCustomized)) : '#444', fontFamily: "'DM Mono', monospace" }}>
-                        {job.chanceCustomized ? `${job.chanceCustomized}%` : '—'}
-                      </span>
-                    </div>
-                    <div style={s.expandRow}>
-                      <span style={s.expandLabel}>Resume version</span>
-                      <span style={{ ...s.expandVal, fontFamily: "'DM Mono', monospace" }}>{job.resumeVersion || '—'}</span>
-                    </div>
-                    <div style={s.expandRow}>
-                      <span style={s.expandLabel}>Cover letter</span>
-                      <span style={{ ...s.expandVal, color: job.coverLetter ? '#1D9E75' : '#555' }}>{job.coverLetter ? 'Yes' : 'No'}</span>
-                    </div>
-                    {safeUrl(job.jobUrl) && (
-                      <div style={{ ...s.expandRow, gridColumn: '1 / -1' }}>
-                        <span style={s.expandLabel}>Job URL</span>
-                        <a href={safeUrl(job.jobUrl)} target="_blank" rel="noreferrer" style={{ color: '#378ADD', fontSize: 13, textDecoration: 'none', wordBreak: 'break-all', display: 'block' }}>
-                          {job.jobUrl}
-                        </a>
-                      </div>
-                    )}
-                  </div>
-
-                  {job.notes && (
-                    <div style={s.notes}>{job.notes}</div>
-                  )}
-
-                  <div
-                    style={s.actionRow}
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                  >
-                    <select
-                      style={s.statusSelect}
-                      value={resolveStatus(job.status)}
-                      onChange={(e) => {
-                        e.stopPropagation();
-                        const newStatus = e.target.value;
-                        if (newStatus !== resolveStatus(job.status)) updateStatus(job.docId, newStatus);
-                      }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {Object.entries(STATUS_CONFIG).map(([k, v]) => (
-                        <option key={k} value={k}>{v.label}</option>
-                      ))}
-                    </select>
-                    <button type="button" style={s.actionBtn('#378ADD')} onClick={() => edit(job)}>edit</button>
-                    {safeUrl(job.jobUrl) && (
-                      <a href={safeUrl(job.jobUrl)} target="_blank" rel="noreferrer" style={{ ...s.actionBtn('#555'), textDecoration: 'none', display: 'inline-block' }}>
-                        view posting ↗
-                      </a>
-                    )}
-                    <button type="button" style={s.actionBtn('#E24B4A')} onClick={() => del(job.docId)}>delete</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
+                {!isCollapsed && (
+                  viewMode === 'grid'
+                    ? <div className="jobs-grid-responsive">{grouped[dateKey].map(job => renderJobCard(job, true))}</div>
+                    : grouped[dateKey].map(job => renderJobCard(job))
+                )}
               </div>
             );
           });
         })()}
         </div>{/* end jobScroll */}
+        </section>{/* end dashboard-jobs */}
+        </div>{/* end dashboard-layout */}
           </>
         )}
       </main>
@@ -899,6 +972,11 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [guestMode, setGuestMode] = useState(() => isGuestSession());
   const [authLoading, setAuthLoading] = useState(true);
+  const [theme, setTheme] = useState(loadTheme);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     if (!isFirebaseConfigured()) {
@@ -933,13 +1011,22 @@ export default function App() {
 
   if (authLoading) return <LoadingScreen message="Loading…" />;
   if (!user && !guestMode) {
-    return <Auth onGuest={enterGuest} firebaseReady={isFirebaseConfigured()} />;
+    return (
+      <Auth
+        onGuest={enterGuest}
+        firebaseReady={isFirebaseConfigured()}
+        theme={theme}
+        setTheme={setTheme}
+      />
+    );
   }
   return (
     <JobTracker
       isGuest={guestMode}
       user={user}
       onLeave={leaveGuest}
+      theme={theme}
+      setTheme={setTheme}
     />
   );
 }

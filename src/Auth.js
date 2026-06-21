@@ -4,8 +4,9 @@ import {
   signInWithEmailAndPassword,
 } from 'firebase/auth';
 import { getAuth, initFirebase, isFirebaseConfigured } from './firebase';
+import ThemePicker from './ThemePicker';
 
-export default function Auth({ onGuest, firebaseReady = true }) {
+export default function Auth({ onGuest, firebaseReady = true, theme, setTheme }) {
   const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -45,12 +46,12 @@ export default function Auth({ onGuest, firebaseReady = true }) {
   };
 
   const input = {
-    background: '#111',
-    border: '1px solid #222',
+    background: 'var(--surface)',
+    border: '1px solid var(--border-2)',
     borderRadius: 6,
     padding: '10px 12px',
     fontSize: 14,
-    color: '#e8e6e0',
+    color: 'var(--t1)',
     fontFamily: "'DM Sans', sans-serif",
     outline: 'none',
     width: '100%',
@@ -59,7 +60,7 @@ export default function Auth({ onGuest, firebaseReady = true }) {
 
   const label = {
     fontSize: 11,
-    color: '#555',
+    color: 'var(--t5)',
     textTransform: 'uppercase',
     letterSpacing: '0.06em',
     marginBottom: 5,
@@ -67,23 +68,24 @@ export default function Auth({ onGuest, firebaseReady = true }) {
   };
 
   const primaryBtn = {
-    background: '#378ADD',
-    color: '#fff',
+    background: 'var(--accent)',
+    color: 'var(--accent-contrast)',
     border: 'none',
     borderRadius: 6,
     padding: '10px 20px',
     fontSize: 13,
-    fontWeight: 500,
+    fontWeight: 600,
     cursor: busy ? 'wait' : 'pointer',
     fontFamily: "'DM Sans', sans-serif",
     width: '100%',
     opacity: busy ? 0.7 : 1,
+    boxShadow: 'var(--accent-glow)',
   };
 
   const guestBtn = {
     background: 'transparent',
-    color: '#888',
-    border: '1px solid #222',
+    color: 'var(--t3)',
+    border: '1px solid var(--border-2)',
     borderRadius: 6,
     padding: '10px 20px',
     fontSize: 13,
@@ -94,9 +96,9 @@ export default function Auth({ onGuest, firebaseReady = true }) {
 
   const tabBtn = (active) => ({
     flex: 1,
-    background: active ? '#1e1e1e' : 'transparent',
-    color: active ? '#e8e6e0' : '#555',
-    border: `1px solid ${active ? '#333' : '#1e1e1e'}`,
+    background: active ? 'var(--border)' : 'transparent',
+    color: active ? 'var(--t1)' : 'var(--t5)',
+    border: `1px solid ${active ? 'var(--t7)' : 'var(--border)'}`,
     borderRadius: 6,
     padding: '8px 14px',
     fontSize: 12,
@@ -108,7 +110,10 @@ export default function Auth({ onGuest, firebaseReady = true }) {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-brand">
-          <p className="auth-title">Job Tracker</p>
+          <div className="auth-brand-row">
+            <p className="auth-title">Job Tracker</p>
+            <ThemePicker theme={theme} setTheme={setTheme} />
+          </div>
           <p className="auth-subtitle">Sign in to sync across devices</p>
         </div>
 
