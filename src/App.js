@@ -465,15 +465,15 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
       >
         {chanceVal !== null && !Number.isNaN(chanceVal) && (
           <span aria-hidden="true" style={{
-            position: 'absolute', top: '50%', right: inGrid ? 14 : 28, transform: 'translateY(-50%)',
-            fontFamily: "'DM Sans', sans-serif", fontWeight: 800, fontSize: inGrid ? 96 : 132,
-            letterSpacing: '-0.07em', lineHeight: 1, color: CHANCE_COLOR(chanceVal),
-            opacity: 0.18, pointerEvents: 'none', userSelect: 'none', zIndex: 0, whiteSpace: 'nowrap',
+            position: 'absolute', top: '50%', right: inGrid ? 16 : 24, transform: 'translateY(-50%)',
+            fontFamily: "'DM Sans', sans-serif", fontWeight: 800, fontSize: inGrid ? 52 : 64,
+            letterSpacing: '-0.05em', lineHeight: 1, color: CHANCE_COLOR(chanceVal),
+            opacity: 0.13, pointerEvents: 'none', userSelect: 'none', zIndex: 0, whiteSpace: 'nowrap',
           }}>
-            {chanceVal}<span style={{ fontSize: '0.46em', fontWeight: 600, letterSpacing: '-0.02em' }}>%</span>
+            {chanceVal}<span style={{ fontSize: '0.5em', fontWeight: 700, letterSpacing: '-0.02em' }}>%</span>
           </span>
         )}
-        <div style={{ ...s.jobTop, position: 'relative', zIndex: 1 }} className="job-top-responsive">
+        <div style={{ ...s.jobTop, position: 'relative', zIndex: 1, paddingRight: chanceVal !== null && !Number.isNaN(chanceVal) ? (inGrid ? 84 : 104) : undefined }} className="job-top-responsive">
           <div style={s.jobMain}>
             <p style={s.jobTitle}>{job.role}</p>
             <p style={s.jobCompany}>{job.company}{job.location ? ` · ${job.location}` : ''}</p>
@@ -724,13 +724,12 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
               {/* chart */}
               {chartType === 'calendar' ? (() => {
                 const weeks = getMonthMatrix(jobs, calDate.y, calDate.m);
-                const monthTotal = weeks.reduce((sum, wk) => sum + wk.reduce((s, d) => s + (d ? d.count : 0), 0), 0);
                 const goPrev = () => setCalDate(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }));
                 const goNext = () => setCalDate(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }));
                 const now = new Date();
                 const isCurrentMonth = calDate.y === now.getFullYear() && calDate.m === now.getMonth();
                 return (
-                  <div className="cal-month">
+                  <div className="chart-box">
                     <div className="cal-month-head">
                       <button type="button" className="cal-nav-btn" onClick={goPrev} aria-label="Previous month">‹</button>
                       <span className="cal-month-title">{MONTH_FULL[calDate.m]} {calDate.y}</span>
@@ -743,51 +742,39 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
                       {weeks.flat().map((day, i) => {
                         if (!day) return <div key={`e${i}`} className="cal-day cal-day-empty" />;
                         const isToday = day.date === today;
-                        const has = day.count > 0;
                         return (
                           <div
                             key={day.date}
                             className={`cal-day${isToday ? ' cal-day-today' : ''}`}
                             title={`${day.date}: ${day.count} application${day.count !== 1 ? 's' : ''}`}
                             style={{ background: HEAT_COLOR(day.count) }}
-                          >
-                            <span className="cal-day-num" style={{ color: has ? 'var(--t1)' : 'var(--t5)', fontWeight: has ? 600 : 400 }}>{day.day}</span>
-                            {day.count > 1 && <span className="cal-day-count">{day.count}</span>}
-                          </div>
+                          />
                         );
                       })}
-                    </div>
-                    <div className="cal-month-foot">
-                      <span style={{ fontSize: 10, color: 'var(--t6)', fontFamily: "'DM Mono', monospace" }}>
-                        {monthTotal} application{monthTotal !== 1 ? 's' : ''} this month
-                      </span>
-                      {!isCurrentMonth && (
-                        <button type="button" className="cal-today-btn" onClick={() => setCalDate({ y: now.getFullYear(), m: now.getMonth() })}>Today</button>
-                      )}
                     </div>
                   </div>
                 );
               })() : chartType === 'bar' ? (
-                <div className="chart-plot">
-                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: chartRange === 'monthly' ? 3 : 6, height: 84 }}>
+                <div className="chart-box">
+                  <div className="bar-plot" style={{ gap: chartRange === 'monthly' ? 3 : 6 }}>
                     {activityData.map((d) => {
                       const isToday = d.label === 'Today';
-                      const barH = d.count === 0 ? 4 : Math.max(8, Math.round((d.count / maxCount) * 84));
+                      const barH = d.count === 0 ? 5 : Math.max(10, Math.round((d.count / maxCount) * 100));
                       return (
                         <div key={d.date} title={`${d.date}: ${d.count}`} style={{ flex: 1, display: 'flex', alignItems: 'flex-end', height: '100%', cursor: 'default' }}>
-                          <div style={{ width: '100%', height: barH, background: isToday ? 'var(--accent)' : d.count > 0 ? 'color-mix(in srgb, var(--accent) 32%, transparent)' : 'var(--surface-2)', borderRadius: 4, transition: 'height 0.3s ease' }} />
+                          <div style={{ width: '100%', height: `${barH}%`, background: isToday ? 'var(--accent)' : d.count > 0 ? 'color-mix(in srgb, var(--accent) 32%, transparent)' : 'var(--surface-2)', borderRadius: 4, transition: 'height 0.3s ease' }} />
                         </div>
                       );
                     })}
                   </div>
                   {chartRange === 'weekly' ? (
-                    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <div className="chart-axis" style={{ gap: 6 }}>
                       {activityData.map((d) => (
                         <span key={d.date} style={{ flex: 1, textAlign: 'center', fontSize: 9, color: d.label === 'Today' ? 'var(--accent)' : 'var(--t8)', fontFamily: "'DM Mono', monospace", whiteSpace: 'nowrap' }}>{d.label}</span>
                       ))}
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+                    <div className="chart-axis" style={{ justifyContent: 'space-between' }}>
                       <span style={{ fontSize: 9, color: 'var(--t8)', fontFamily: "'DM Mono', monospace" }}>{activityData[0]?.date?.slice(5)}</span>
                       <span style={{ fontSize: 9, color: 'var(--accent)', fontFamily: "'DM Mono', monospace" }}>Today</span>
                     </div>
@@ -809,31 +796,19 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
                 const fillD = pts.length > 0
                   ? `${pathD} L ${pts[pts.length - 1][0]},${H} L ${pts[0][0]},${H} Z`
                   : '';
-                const todayIdx = activityData.length - 1;
                 return (
-                  <div className="chart-plot">
-                    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 80, display: 'block' }} preserveAspectRatio="none">
+                  <div className="chart-box">
+                    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', flex: 1, minHeight: 0, display: 'block' }} preserveAspectRatio="none">
                       <defs>
                         <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" style={{ stopColor: 'var(--accent)', stopOpacity: 0.18 }} />
+                          <stop offset="0%" style={{ stopColor: 'var(--accent)', stopOpacity: 0.22 }} />
                           <stop offset="100%" style={{ stopColor: 'var(--accent)', stopOpacity: 0 }} />
                         </linearGradient>
                       </defs>
                       {fillD && <path d={fillD} fill="url(#cg)" />}
-                      {pathD && <path d={pathD} fill="none" style={{ stroke: 'var(--accent)' }} strokeWidth="1.5" strokeLinecap="round" />}
-                      {pts.map(([x, y], i) => {
-                        const isToday = i === todayIdx;
-                        const hasPt = activityData[i].count > 0 || isToday;
-                        return hasPt ? (
-                          <circle key={i} cx={x} cy={y}
-                            r={isToday ? 3 : 2}
-                            style={{ fill: isToday ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 53%, transparent)', stroke: 'var(--bg)' }}
-                            strokeWidth={isToday ? 1.5 : 0}
-                          />
-                        ) : null;
-                      })}
+                      {pathD && <path d={pathD} fill="none" style={{ stroke: 'var(--accent)' }} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
                     </svg>
-                    <div style={{ display: 'flex', justifyContent: chartRange === 'weekly' ? 'space-around' : 'space-between', marginTop: 3 }}>
+                    <div className="chart-axis" style={{ justifyContent: chartRange === 'weekly' ? 'space-around' : 'space-between' }}>
                       {chartRange === 'weekly'
                         ? activityData.map(d => (
                           <span key={d.date} style={{ fontSize: 9, color: d.label === 'Today' ? 'var(--accent)' : 'var(--t8)', fontFamily: "'DM Mono', monospace" }}>{d.label}</span>
@@ -851,26 +826,25 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
           );
         })()}
 
-        {/* ── Filter tiles ── */}
-        <div className="filters-tiles">
+        {/* ── Filters ── */}
+        <p className="filters-label">Filter by status</p>
+        <div className="filters-list">
           {['all', ...Object.keys(STATUS_CONFIG)].map(f => {
             const active = filter === f;
             const color = f === 'all' ? 'var(--accent)' : STATUS_CONFIG[f].color;
             const count = f === 'all' ? jobs.length : jobs.filter(j => j.status === f).length;
-            const label = f === 'all' ? 'All' : STATUS_CONFIG[f].label;
+            const label = f === 'all' ? 'All applications' : STATUS_CONFIG[f].label;
             return (
               <button
                 key={f}
                 type="button"
                 onClick={() => setFilter(f)}
-                className={`filter-tile${active ? ' active' : ''}${f === 'all' ? ' filter-tile-all' : ''}`}
+                className={`filter-row${active ? ' active' : ''}`}
                 style={{ '--tile-color': color }}
               >
-                <span className="filter-tile-top">
-                  <span className="filter-tile-dot" style={{ background: color }} />
-                  <span className="filter-tile-count">{count}</span>
-                </span>
-                <span className="filter-tile-label">{label}</span>
+                <span className="filter-row-dot" />
+                <span className="filter-row-label">{label}</span>
+                <span className="filter-row-count">{count}</span>
               </button>
             );
           })}
