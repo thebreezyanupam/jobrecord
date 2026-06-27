@@ -45,6 +45,13 @@ const STATUS_CONFIG = {
   saved:      { label: 'Saved',       color: '#7F77DD', bg: 'rgba(127,119,221,0.12)', dot: '#7F77DD' },
 };
 
+const WM_FONTS = {
+  bebas:  { family: "'Bebas Neue', cursive",            weight: 400, tracking: '0.01em',  label: 'Bebas' },
+  anton:  { family: "'Anton', sans-serif",              weight: 400, tracking: '0.01em',  label: 'Anton' },
+  barlow: { family: "'Barlow Condensed', sans-serif",   weight: 900, tracking: '-0.02em', label: 'Barlow' },
+  dm:     { family: "'DM Sans', sans-serif",            weight: 700, tracking: '-0.06em', label: 'DM Sans' },
+};
+
 const CHANCE_COLOR = (n) => {
   if (n >= 60) return '#1D9E75';
   if (n >= 40) return '#EF9F27';
@@ -179,9 +186,14 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
   // Date groups are expanded by default; this set tracks the ones the user collapsed.
   const [collapsedDates, setCollapsedDates] = useState(new Set());
 
-  // Persist view mode and chart type to localStorage
+  const [wmFont, setWmFont] = useState(() => {
+    try { return localStorage.getItem('jt-wm-font') || 'bebas'; } catch { return 'bebas'; }
+  });
+
+  // Persist view mode, chart type, and watermark font to localStorage
   useEffect(() => { try { localStorage.setItem('jt-view-mode', viewMode); } catch {} }, [viewMode]);
   useEffect(() => { try { localStorage.setItem('jt-chart-type', chartType); } catch {} }, [chartType]);
+  useEffect(() => { try { localStorage.setItem('jt-wm-font', wmFont); } catch {} }, [wmFont]);
 
   const toggleDateCollapse = (key) => setCollapsedDates(prev => {
     const next = new Set(prev);
@@ -433,7 +445,7 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
     main: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 1320, margin: '0 auto', padding: '0 24px' },
     mainOuter: { flex: 1, overflow: 'hidden', display: 'flex', justifyContent: 'center' },
     staticArea: { flexShrink: 0, paddingTop: 14 },
-    jobScroll: { flex: 1, overflowY: 'auto', paddingBottom: 40 },
+    jobScroll: { flex: 1, overflowY: 'auto', paddingBottom: 40, paddingRight: 10 },
     jobCard: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10, boxShadow: 'var(--shadow-card)' },
     jobTop: { padding: '16px 20px', cursor: 'pointer' },
     jobMain: { flex: 1, minWidth: 0 },
@@ -510,15 +522,18 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
       >
         {chanceVal !== null && !Number.isNaN(chanceVal) && (
           <span aria-hidden="true" style={{
-            position: 'absolute', top: '50%', right: inGrid ? 16 : 24, transform: 'translateY(-50%)',
-            fontFamily: "'DM Sans', sans-serif", fontWeight: 800, fontSize: inGrid ? 52 : 64,
-            letterSpacing: '-0.05em', lineHeight: 1, color: CHANCE_COLOR(chanceVal),
-            opacity: 0.13, pointerEvents: 'none', userSelect: 'none', zIndex: 0, whiteSpace: 'nowrap',
+            position: 'absolute', bottom: inGrid ? -14 : -18, right: inGrid ? 10 : 16,
+            fontFamily: WM_FONTS[wmFont].family,
+            fontWeight: WM_FONTS[wmFont].weight,
+            letterSpacing: WM_FONTS[wmFont].tracking,
+            fontSize: inGrid ? 88 : 110,
+            lineHeight: 1, color: CHANCE_COLOR(chanceVal),
+            opacity: 0.09, pointerEvents: 'none', userSelect: 'none', zIndex: 0, whiteSpace: 'nowrap',
           }}>
-            {chanceVal}<span style={{ fontSize: '0.5em', fontWeight: 700, letterSpacing: '-0.02em' }}>%</span>
+            {chanceVal}<span style={{ fontSize: '0.42em' }}>%</span>
           </span>
         )}
-        <div style={{ ...s.jobTop, position: 'relative', zIndex: 1, paddingRight: chanceVal !== null && !Number.isNaN(chanceVal) ? (inGrid ? 84 : 104) : undefined }} className="job-top-responsive">
+        <div style={{ ...s.jobTop, position: 'relative', zIndex: 1 }} className="job-top-responsive">
           <div style={s.jobMain}>
             <p style={s.jobTitle}>{job.role}</p>
             <p style={s.jobCompany}>{job.company}{job.location ? ` · ${job.location}` : ''}</p>
@@ -872,27 +887,58 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
         })()}
 
         {/* ── Filters ── */}
-        <p className="filters-label">Filter by status</p>
-        <div className="filters-list">
+        <p className="filters-label">Status</p>
+        <div className="filters-chips">
           {['all', ...Object.keys(STATUS_CONFIG)].map(f => {
             const active = filter === f;
             const color = f === 'all' ? 'var(--accent)' : STATUS_CONFIG[f].color;
             const count = f === 'all' ? jobs.length : jobs.filter(j => j.status === f).length;
-            const label = f === 'all' ? 'All applications' : STATUS_CONFIG[f].label;
+            const label = f === 'all' ? 'All' : STATUS_CONFIG[f].label;
             return (
               <button
                 key={f}
                 type="button"
                 onClick={() => setFilter(f)}
-                className={`filter-row${active ? ' active' : ''}`}
+                className={`filter-chip${active ? ' active' : ''}`}
                 style={{ '--tile-color': color }}
               >
-                <span className="filter-row-dot" />
-                <span className="filter-row-label">{label}</span>
-                <span className="filter-row-count">{count}</span>
+                <span className="filter-chip-dot" />
+                <span className="filter-chip-label">{label}</span>
+                <span className="filter-chip-count">{count}</span>
               </button>
             );
           })}
+        </div>
+
+        {/* ── Watermark Font Picker ── */}
+        <p className="filters-label" style={{ marginTop: 14 }}>% Font style</p>
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+          {Object.entries(WM_FONTS).map(([key, f]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setWmFont(key)}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end',
+                gap: 4, padding: '10px 14px 8px',
+                border: `1px solid ${wmFont === key ? 'var(--accent)' : 'var(--border-2)'}`,
+                borderRadius: 9,
+                background: wmFont === key ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+                cursor: 'pointer', transition: 'all 0.12s',
+                minWidth: 62,
+              }}
+            >
+              <span style={{
+                fontFamily: f.family, fontWeight: f.weight, fontSize: 34,
+                letterSpacing: f.tracking, lineHeight: 1,
+                color: wmFont === key ? 'var(--accent)' : 'var(--t3)',
+              }}>75</span>
+              <span style={{
+                fontFamily: "'DM Mono', monospace", fontSize: 9, letterSpacing: '0.06em',
+                textTransform: 'uppercase', color: wmFont === key ? 'var(--accent)' : 'var(--t6)',
+              }}>{f.label}</span>
+            </button>
+          ))}
         </div>
 
         </aside>{/* end dashboard-side */}
