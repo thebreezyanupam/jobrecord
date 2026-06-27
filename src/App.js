@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import {
   collection,
@@ -190,10 +190,26 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
     try { return localStorage.getItem('jt-wm-font') || 'bebas'; } catch { return 'bebas'; }
   });
 
+  const [search, setSearch] = useState('');
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const profileRef = useRef(null);
+  const exportRef = useRef(null);
+
   // Persist view mode, chart type, and watermark font to localStorage
   useEffect(() => { try { localStorage.setItem('jt-view-mode', viewMode); } catch {} }, [viewMode]);
   useEffect(() => { try { localStorage.setItem('jt-chart-type', chartType); } catch {} }, [chartType]);
   useEffect(() => { try { localStorage.setItem('jt-wm-font', wmFont); } catch {} }, [wmFont]);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (profileRef.current && !profileRef.current.contains(e.target)) setShowProfileMenu(false);
+      if (exportRef.current && !exportRef.current.contains(e.target)) setShowExportMenu(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const toggleDateCollapse = (key) => setCollapsedDates(prev => {
     const next = new Set(prev);
@@ -417,7 +433,13 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
     }
   };
 
-  const filtered = filter === 'all' ? jobs : jobs.filter(j => j.status === filter);
+  const filtered = jobs
+    .filter(j => filter === 'all' || j.status === filter)
+    .filter(j => {
+      if (!search.trim()) return true;
+      const q = search.trim().toLowerCase();
+      return (j.company || '').toLowerCase().includes(q) || (j.role || '').toLowerCase().includes(q);
+    });
 
   const today = todayLocal();
   const yesterday = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
@@ -569,32 +591,121 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
           <p style={s.title}>Job Tracker</p>
           <p style={s.subtitle} className="app-subtitle">Applications</p>
         </div>
-        <div className="header-actions">
-          {isGuest ? (
-            <span className="user-guest-label" title="Saved on this device only">Guest</span>
-          ) : (
-            <span className="user-email" title={user.email}>{user.email}</span>
+
+        {/* ── Search ── */}
+        <div className="nav-search-wrap">
+          <span className="nav-search-icon">⌕</span>
+          <input
+            className="nav-search-input"
+            type="text"
+            placeholder="Search role or company…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            spellCheck={false}
+          />
+          {search && (
+            <button className="nav-search-clear" onClick={() => setSearch('')} aria-label="Clear search">×</button>
           )}
-          <ThemePicker theme={theme} setTheme={setTheme} />
-          <button type="button" className="logout-btn" onClick={handleLeave}>
-            {isGuest ? 'Exit' : 'Log out'}
-          </button>
+        </div>
+
+        <div className="header-actions">
+          {/* Add application */}
           <button
             type="button"
             style={s.addBtn}
             className="add-btn-full"
-            onClick={() => {
-              if (showForm) {
-                setShowForm(false);
-                resetFormPanel();
-              } else {
-                resetFormPanel();
-                setShowForm(true);
-              }
-            }}
+            onClick={() => { if (showForm) { setShowForm(false); resetFormPanel(); } else { resetFormPanel(); setShowForm(true); } }}
           >
-            {showForm ? 'Close' : 'Add application'}
+            {showForm ? '✕ Close' : '+ Add job'}
           </button>
+
+          {/* Export dropdown */}
+          <div ref={exportRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              className="nav-icon-btn"
+              onClick={() => { setShowExportMenu(v => !v); setShowProfileMenu(false); }}
+              disabled={!jobs.length}
+              title="Export applications"
+            >
+              ↓ Export
+            </button>
+            {showExportMenu && (
+              <div className="nav-dropdown">
+                <button className="nav-dropdown-item" onClick={() => { exportCsv(); setShowExportMenu(false); }}>
+                  <span className="nav-dropdown-icon">⬇</span>
+                  <span>
+                    <span className="nav-dropdown-label">Download as CSV</span>
+                    <span className="nav-dropdown-sub">Spreadsheet format</span>
+                  </span>
+                </button>
+                <button className="nav-dropdown-item" onClick={() => { exportJson(); setShowExportMenu(false); }}>
+                  <span className="nav-dropdown-icon">⬇</span>
+                  <span>
+                    <span className="nav-dropdown-label">Download as JSON</span>
+                    <span className="nav-dropdown-sub">Raw data format</span>
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Profile dropdown */}
+          <div ref={profileRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              className="nav-profile-btn"
+              onClick={() => { setShowProfileMenu(v => !v); setShowExportMenu(false); }}
+              aria-label="Profile & settings"
+            >
+              <span className="nav-profile-avatar">
+                {isGuest ? 'G' : (user.email?.[0] || 'U').toUpperCase()}
+              </span>
+            </button>
+            {showProfileMenu && (
+              <div className="nav-dropdown nav-dropdown-wide">
+                {/* Identity */}
+                <div className="nav-dropdown-identity">
+                  <span className="nav-dropdown-email">
+                    {isGuest ? 'Guest mode' : user.email}
+                  </span>
+                  {isGuest && <span className="nav-dropdown-sub">Saved on this device</span>}
+                </div>
+                <div className="nav-dropdown-divider" />
+
+                {/* Theme */}
+                <div className="nav-dropdown-section">
+                  <span className="nav-dropdown-section-label">Theme</span>
+                  <ThemePicker theme={theme} setTheme={setTheme} />
+                </div>
+                <div className="nav-dropdown-divider" />
+
+                {/* Watermark font */}
+                <div className="nav-dropdown-section">
+                  <span className="nav-dropdown-section-label">% Watermark font</span>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                    {Object.entries(WM_FONTS).map(([key, f]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`wm-font-btn${wmFont === key ? ' active' : ''}`}
+                        onClick={() => setWmFont(key)}
+                      >
+                        <span style={{ fontFamily: f.family, fontWeight: f.weight, fontSize: 22, letterSpacing: f.tracking, lineHeight: 1, display: 'block' }}>75</span>
+                        <span className="wm-font-label">{f.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="nav-dropdown-divider" />
+
+                {/* Logout */}
+                <button className="nav-dropdown-item nav-dropdown-logout" onClick={() => { setShowProfileMenu(false); handleLeave(); }}>
+                  {isGuest ? 'Exit guest mode' : 'Log out'}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -910,37 +1021,6 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
           })}
         </div>
 
-        {/* ── Watermark Font Picker ── */}
-        <p className="filters-label" style={{ marginTop: 14 }}>% Font style</p>
-        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-          {Object.entries(WM_FONTS).map(([key, f]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setWmFont(key)}
-              style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end',
-                gap: 4, padding: '10px 14px 8px',
-                border: `1px solid ${wmFont === key ? 'var(--accent)' : 'var(--border-2)'}`,
-                borderRadius: 9,
-                background: wmFont === key ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
-                cursor: 'pointer', transition: 'all 0.12s',
-                minWidth: 62,
-              }}
-            >
-              <span style={{
-                fontFamily: f.family, fontWeight: f.weight, fontSize: 34,
-                letterSpacing: f.tracking, lineHeight: 1,
-                color: wmFont === key ? 'var(--accent)' : 'var(--t3)',
-              }}>75</span>
-              <span style={{
-                fontFamily: "'DM Mono', monospace", fontSize: 9, letterSpacing: '0.06em',
-                textTransform: 'uppercase', color: wmFont === key ? 'var(--accent)' : 'var(--t6)',
-              }}>{f.label}</span>
-            </button>
-          ))}
-        </div>
-
         </aside>{/* end dashboard-side */}
 
         <section className="dashboard-jobs">
@@ -948,49 +1028,18 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
         <div className="jobs-toolbar">
           <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: 'var(--t5)' }}>
             {filtered.length} {filtered.length === 1 ? 'application' : 'applications'}
+            {search && <span style={{ color: 'var(--accent)', marginLeft: 6 }}>· "{search}"</span>}
           </span>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <div style={{ display: 'flex', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 7, padding: 2, gap: 2 }}>
-              {[['list', 'List'], ['grid', 'Grid']].map(([v, label]) => (
-                <button key={v} type="button" onClick={() => setViewMode(v)} style={{
-                  background: viewMode === v ? 'var(--border)' : 'transparent',
-                  color: viewMode === v ? 'var(--t1)' : 'var(--t6)',
-                  border: 'none', borderRadius: 5, padding: '4px 12px',
-                  fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif",
-                  transition: 'background 0.15s, color 0.15s',
-                }}>{label}</button>
-              ))}
-            </div>
-            <button
-              type="button"
-              onClick={exportCsv}
-              disabled={!jobs.length}
-              title="Export all applications as a CSV spreadsheet"
-              style={{
-                background: 'transparent', color: jobs.length ? '#1D9E75' : 'var(--t7)',
-                border: `1px solid ${jobs.length ? '#1D9E7544' : 'var(--surface-3)'}`,
-                borderRadius: 7, padding: '5px 12px', fontSize: 11,
-                cursor: jobs.length ? 'pointer' : 'not-allowed', fontFamily: "'DM Sans', sans-serif",
-                display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
-              }}
-            >
-              ↓ CSV
-            </button>
-            <button
-              type="button"
-              onClick={exportJson}
-              disabled={!jobs.length}
-              title="Export all applications as a JSON file"
-              style={{
-                background: 'transparent', color: jobs.length ? '#4F9DFF' : 'var(--t7)',
-                border: `1px solid ${jobs.length ? '#4F9DFF44' : 'var(--surface-3)'}`,
-                borderRadius: 7, padding: '5px 12px', fontSize: 11,
-                cursor: jobs.length ? 'pointer' : 'not-allowed', fontFamily: "'DM Sans', sans-serif",
-                display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
-              }}
-            >
-              ↓ JSON
-            </button>
+          <div style={{ display: 'flex', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 7, padding: 2, gap: 2 }}>
+            {[['list', 'List'], ['grid', 'Grid']].map(([v, label]) => (
+              <button key={v} type="button" onClick={() => setViewMode(v)} style={{
+                background: viewMode === v ? 'var(--border)' : 'transparent',
+                color: viewMode === v ? 'var(--t1)' : 'var(--t6)',
+                border: 'none', borderRadius: 5, padding: '4px 12px',
+                fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif",
+                transition: 'background 0.15s, color 0.15s',
+              }}>{label}</button>
+            ))}
           </div>
         </div>
 

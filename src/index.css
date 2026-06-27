@@ -267,13 +267,11 @@ textarea:focus {
 
 /* —— App shell —— */
 .app-header {
-  flex-wrap: wrap;
   gap: 10px;
 }
 
 .header-left {
-  flex: 1;
-  min-width: 0;
+  flex-shrink: 0;
 }
 
 .header-actions {
@@ -281,37 +279,259 @@ textarea:focus {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  flex-wrap: wrap;
 }
 
 .app-subtitle {
   display: block;
 }
 
-.user-email {
-  font-family: 'DM Mono', monospace;
-  font-size: 11px;
-  color: var(--t6);
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* —— Nav search —— */
+.nav-search-wrap {
+  flex: 1;
+  min-width: 0;
+  max-width: 340px;
+  position: relative;
+  display: flex;
+  align-items: center;
 }
 
-.logout-btn {
+.nav-search-icon {
+  position: absolute;
+  left: 10px;
+  font-size: 16px;
+  color: var(--t6);
+  pointer-events: none;
+  line-height: 1;
+}
+
+.nav-search-input {
+  width: 100%;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 30px 7px 32px;
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--t1);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.nav-search-input::placeholder {
+  color: var(--t7);
+}
+
+.nav-search-input:focus {
+  border-color: var(--accent);
+}
+
+.nav-search-clear {
+  position: absolute;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--t6);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+}
+
+.nav-search-clear:hover {
+  color: var(--t2);
+}
+
+/* —— Nav buttons —— */
+.nav-icon-btn {
   background: transparent;
-  color: var(--t5);
   border: 1px solid var(--border-2);
-  border-radius: 6px;
-  padding: 8px 14px;
+  border-radius: 7px;
+  padding: 7px 13px;
   font-size: 12px;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--t3);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.nav-icon-btn:hover {
+  border-color: var(--t6);
+  color: var(--t1);
+}
+
+.nav-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* —— Profile avatar button —— */
+.nav-profile-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.nav-profile-btn:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.nav-profile-avatar {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t2);
+  line-height: 1;
+}
+
+/* —— Dropdowns —— */
+.nav-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: 11px;
+  box-shadow: var(--shadow-pop);
+  padding: 6px;
+  z-index: 200;
+  min-width: 180px;
+  animation: dropIn 0.12s ease;
+}
+
+.nav-dropdown-wide {
+  min-width: 260px;
+}
+
+@keyframes dropIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.nav-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
   cursor: pointer;
   font-family: 'DM Sans', sans-serif;
+  text-align: left;
+  transition: background 0.1s;
 }
 
-.logout-btn:hover {
+.nav-dropdown-item:hover {
+  background: var(--surface-2);
+}
+
+.nav-dropdown-icon {
+  font-size: 14px;
+  color: var(--t5);
+  flex-shrink: 0;
+}
+
+.nav-dropdown-label {
+  display: block;
+  font-size: 13px;
   color: var(--t2);
-  border-color: var(--t7);
+}
+
+.nav-dropdown-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--t6);
+  margin-top: 1px;
+}
+
+.nav-dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 5px 4px;
+}
+
+.nav-dropdown-identity {
+  padding: 8px 10px 6px;
+}
+
+.nav-dropdown-email {
+  display: block;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--t3);
+  word-break: break-all;
+}
+
+.nav-dropdown-section {
+  padding: 8px 10px;
+}
+
+.nav-dropdown-section-label {
+  display: block;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--t6);
+  margin-bottom: 8px;
+}
+
+.nav-dropdown-logout {
+  color: var(--t3);
+  font-size: 13px;
+  padding: 9px 10px;
+}
+
+.nav-dropdown-logout:hover {
+  background: color-mix(in srgb, #E24B4A 12%, transparent);
+  color: #E24B4A;
+}
+
+/* —— Watermark font buttons (in profile dropdown) —— */
+.wm-font-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 10px 6px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.12s;
+  min-width: 52px;
+}
+
+.wm-font-btn:hover {
+  border-color: var(--t6);
+}
+
+.wm-font-btn.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.wm-font-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--t5);
+}
+
+.wm-font-btn.active .wm-font-label {
+  color: var(--accent);
 }
 
 /* —— Theme picker —— */
