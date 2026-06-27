@@ -60,6 +60,14 @@ const parseLocalDate = (dateStr) => {
 const fmt = (dateStr) => {
   const d = parseLocalDate(dateStr);
   if (!d) return '—';
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayDiff = Math.floor((today - d) / (1000 * 60 * 60 * 24));
+  if (dayDiff === 0) return 'Today';
+  if (dayDiff === 1) return '1 day ago';
+  if (dayDiff < 7) return `${dayDiff} days ago`;
+  if (dayDiff < 30) return `${Math.floor(dayDiff / 7)} weeks ago`;
+  if (dayDiff < 365) return `${Math.floor(dayDiff / 30)} months ago`;
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
@@ -161,11 +169,19 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
   const [form, setForm] = useState(emptyForm);
   const [dateLockedToToday, setDateLockedToToday] = useState(true);
   const [chartRange, setChartRange] = useState('weekly');
-  const [chartType, setChartType] = useState('calendar');
+  const [chartType, setChartType] = useState(() => {
+    try { return localStorage.getItem('jt-chart-type') || 'calendar'; } catch { return 'calendar'; }
+  });
   const [calDate, setCalDate] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
-  const [viewMode, setViewMode] = useState('list');
+  const [viewMode, setViewMode] = useState(() => {
+    try { return localStorage.getItem('jt-view-mode') || 'list'; } catch { return 'list'; }
+  });
   // Date groups are expanded by default; this set tracks the ones the user collapsed.
   const [collapsedDates, setCollapsedDates] = useState(new Set());
+
+  // Persist view mode and chart type to localStorage
+  useEffect(() => { try { localStorage.setItem('jt-view-mode', viewMode); } catch {} }, [viewMode]);
+  useEffect(() => { try { localStorage.setItem('jt-chart-type', chartType); } catch {} }, [chartType]);
 
   const toggleDateCollapse = (key) => setCollapsedDates(prev => {
     const next = new Set(prev);
@@ -344,6 +360,35 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
     const a = document.createElement('a');
     a.href = url;
     a.download = `job-applications-${todayLocal()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setImportNotice(jobs.length === 1 ? 'Exported 1 application.' : `Exported ${jobs.length} applications.`);
+  };
+
+  const exportJson = () => {
+    if (!jobs.length) return;
+    const data = [...jobs].sort((a, b) => b.id - a.id).map((j) => ({
+      company: j.company,
+      role: j.role,
+      location: j.location,
+      status: resolveStatus(j.status),
+      appliedDate: j.appliedDate ? j.appliedDate.slice(0, 10) : null,
+      platform: j.platform,
+      jobUrl: j.jobUrl,
+      chanceBase: j.chanceBase ? parseInt(j.chanceBase) : null,
+      chanceCustomized: j.chanceCustomized ? parseInt(j.chanceCustomized) : null,
+      resumeVersion: j.resumeVersion,
+      coverLetter: j.coverLetter || false,
+      notes: j.notes,
+    }));
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `job-applications-${todayLocal()}.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -883,7 +928,22 @@ function JobTracker({ isGuest, user, onLeave, theme, setTheme }) {
                 display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
               }}
             >
-              ↓ Export CSV
+              ↓ CSV
+            </button>
+            <button
+              type="button"
+              onClick={exportJson}
+              disabled={!jobs.length}
+              title="Export all applications as a JSON file"
+              style={{
+                background: 'transparent', color: jobs.length ? '#4F9DFF' : 'var(--t7)',
+                border: `1px solid ${jobs.length ? '#4F9DFF44' : 'var(--surface-3)'}`,
+                borderRadius: 7, padding: '5px 12px', fontSize: 11,
+                cursor: jobs.length ? 'pointer' : 'not-allowed', fontFamily: "'DM Sans', sans-serif",
+                display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
+              }}
+            >
+              ↓ JSON
             </button>
           </div>
         </div>
